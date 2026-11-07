@@ -2,11 +2,23 @@
 // env.store is the data layer (src/lib/store.js); the rest of env is config.
 // Runs on Vercel (api/index.mjs), the local dev server and in tests.
 import { identFromPath } from './lib/paths.js';
-import { ingest } from './lib/ingest.js';
+import { ingest, hashId, clientIp } from './lib/ingest.js';
+import { refreshProduct, refreshDue, isStale } from './lib/refresh.js';
 import { outboundUrl, affiliateActive, resolveProduct } from './lib/links.js';
 import { istDay } from './lib/days.js';
 import { CSS, JS, FAVICON } from './pages/assets.js';
 import { homePage, dealsPage, productPage, disclosurePage, privacyPage, notFoundPage } from './pages/pages.js';
+
+/** Live price fetches a single visitor can trigger per day (each pasted link). */
+const LOOKUP_FETCHES_PER_IP = 60;
+
+/** The schedule authenticates with CRON_SECRET (x-cron-secret or Bearer, as Vercel Cron sends it). */
+function cronAuthorized(request, env) {
+  const secret = env.CRON_SECRET || '';
+  if (secret.length < 16) return false;
+  const auth = request.headers.get('authorization') || '';
+  return request.headers.get('x-cron-secret') === secret || auth === `Bearer ${secret}`;
+}
 
 const SECURITY_HEADERS = {
   'content-security-policy':
@@ -81,6 +93,11 @@ export async function handle(request, env) {
         )
       );
     }
+    if (path === '/api/cron/refresh' && (request.method === 'POST' || request.method === 'GET')) {
+      if (!cronAuthorized(request, env)) return json({ error: 'unauthorized' }, 401, { 'cache-control': 'no-store' });
+      const summary = await refreshDue(env, { now });
+      return json(summary, 200, { 'cache-control': 'no-store' });
+    }
     return withCors(json({ error: 'not found' }, 404));
   }
 
@@ -95,8 +112,22 @@ export async function handle(request, env) {
 
   if (path === '/lookup') {
     const q = (url.searchParams.get('u') || '').slice(0, 2000);
-    const ident = await resolveProduct(q);
-    if (ident) return redirect(`/p/${ident.store}/${encodeURIComponent(ident.id)}`);
+    const ident = await resolveProduct(q, env.fetchImpl);
+    if (ident) {
+      // Fetch the live price now unless it was checked in the last few hours.
+      const product = await store.getProduct(ident.key);
+      if (isStale(product, now)) {
+        const who = await hashId(env.CLIENT_SALT || 'dev-only-salt', `lookup:${clientIp(request)}`);
+        if (await store.bumpUsage(who, now, LOOKUP_FETCHES_PER_IP)) {
+          try {
+            await refreshProduct(env, ident, now);
+          } catch (err) {
+            console.error('live check failed', ident.key, err);
+          }
+        }
+      }
+      return redirect(`/p/${ident.store}/${encodeURIComponent(ident.id)}`);
+    }
     const error = 'Yeh link samajh nahi aaya. Amazon.in, Flipkart ya Myntra ke product page ka link (ya app ka share link) daalo.';
     return redirect(`/?error=${encodeURIComponent(error)}&q=${encodeURIComponent(q)}`);
   }

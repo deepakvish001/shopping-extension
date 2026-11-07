@@ -12,7 +12,9 @@
     "dev:website": "node website/scripts/dev.mjs --demo"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.15",
+    "@electric-sql/pglite": "^0.5.15"
+  },
+  "dependencies": {
     "linkedom": "^0.18.12"
   }
 }

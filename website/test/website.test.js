@@ -7,6 +7,24 @@ import { resolveProduct, extractUrl } from '../src/lib/links.js';
 import { identFromPath } from '../src/lib/paths.js';
 import { validatePoint, LIMITS, hashId } from '../src/lib/ingest.js';
 import { supabaseRpc } from '../src/lib/supabase.js';
+import { fetchProduct } from '../src/lib/fetcher.js';
+import { refreshDue, STALE_MS } from '../src/lib/refresh.js';
+import fs from 'node:fs';
+
+const fixture = (name) => fs.readFileSync(new URL(`../../tests/fixtures/${name}`, import.meta.url), 'utf8');
+
+/** A fake shop: serves `pages[url]` (string body or a status number) and counts requests. */
+function fakeShop(pages) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    const page = pages[url];
+    if (page === undefined) return new Response('not found', { status: 404 });
+    if (typeof page === 'number') return new Response('blocked', { status: page });
+    return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  return { fetchImpl, calls };
+}
 
 const FK_URL = 'https://www.flipkart.com/samsung-galaxy-m35/p/itm123abc?pid=MOBGZ12345';
 const AMZ_URL = 'https://www.amazon.in/dp/B0TEST1234';
@@ -305,14 +323,16 @@ test('product page flags a fake sale', async () => {
   assert.doesNotMatch(body, /Affiliate link:/, 'no affiliate on Amazon');
 });
 
-test('unknown product page is a helpful 404, noindex', async () => {
+test('unknown product page offers a live check, noindex', async () => {
   const env = await makeEnv();
   const res = await get(env, '/p/amazon/B0NOTHERE1');
   assert.equal(res.status, 404);
   const body = await res.text();
-  assert.match(body, /Is product ka data abhi nahi hai/);
+  assert.match(body, /Is product ko abhi track nahi kiya gaya/);
   assert.match(body, /noindex/);
-  assert.match(body, /href="https:\/\/www\.amazon\.in\/dp\/B0NOTHERE1"/);
+  assert.match(body, /href="\/lookup\?u=https%3A%2F%2Fwww\.amazon\.in%2Fdp%2FB0NOTHERE1"/);
+  const fk = await (await get(env, '/p/flipkart/MOBGZ99999')).text();
+  assert.match(fk, /<form class="lookup"/, 'Flipkart needs the full link, so it asks for it');
   assert.equal((await get(env, '/p/amazon/bad')).status, 404);
 });
 
@@ -383,4 +403,130 @@ test('a missing or broken database gives a plain 500, not a crash', async () => 
   } finally {
     console.error = origError;
   }
+});
+
+// ------------------------------------------------------- live price checks
+
+test('fetchProduct reads the price, and reports blocks, captchas and timeouts', async () => {
+  const ident = { url: FK_URL };
+  const shop = fakeShop({ [FK_URL]: fixture('flipkart.html') });
+  const ok = await fetchProduct(ident, { fetchImpl: shop.fetchImpl });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.product.price, 13999);
+  assert.equal(ok.product.key, 'flipkart:MOBGZ12345');
+  assert.match(shop.calls[0].init.headers['accept-language'], /en-IN/);
+
+  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: 529 }).fetchImpl }), { ok: false, error: 'blocked (HTTP 529)' });
+  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: 500 }).fetchImpl }), { ok: false, error: 'HTTP 500' });
+  const captcha = '<html><body>Enter the characters you see below</body></html>';
+  assert.deepEqual(await fetchProduct({ url: AMZ_URL }, { fetchImpl: fakeShop({ [AMZ_URL]: captcha }).fetchImpl }), { ok: false, error: 'blocked (captcha)' });
+  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: '<html><body>hi</body></html>' }).fetchImpl }), { ok: false, error: 'price not found' });
+  const slow = async (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+  assert.deepEqual(await fetchProduct(ident, { fetchImpl: slow, timeoutMs: 20 }), { ok: false, error: 'timeout' });
+
+  const proxied = fakeShop({ ['https://scraper.example/?u=' + encodeURIComponent(FK_URL)]: fixture('flipkart.html') });
+  const viaProxy = await fetchProduct(ident, { fetchImpl: proxied.fetchImpl, proxyTemplate: 'https://scraper.example/?u={url}' });
+  assert.equal(viaProxy.ok, true, 'optional scraping-service template');
+});
+
+test('pasting a link fetches the live price once, then serves it from the database', async () => {
+  const shop = fakeShop({ [FK_URL]: fixture('flipkart.html') });
+  const env = await makeEnv({ fetchImpl: shop.fetchImpl });
+  const res = await get(env, `/lookup?u=${encodeURIComponent('Dekho ' + FK_URL + '&affid=x')}`, { redirect: 'manual' });
+  assert.equal(res.headers.get('location'), '/p/flipkart/MOBGZ12345');
+  assert.equal(shop.calls.length, 1);
+  assert.equal(shop.calls[0].url, FK_URL, 'fetches the clean canonical URL');
+
+  const p = await env.store.getProduct('flipkart:MOBGZ12345');
+  assert.equal(p.last_price, 13999);
+  assert.equal(p.title, 'SAMSUNG Galaxy M35 5G (Moonlight Blue, 128 GB)');
+  assert.equal(p.reporters, 0, 'server checks are not counted as users');
+  assert.equal(p.check_failures, 0);
+  assert.deepEqual(await q(env, 'select client from observations'), [{ client: 'server' }]);
+
+  const page = await (await get(env, '/p/flipkart/MOBGZ12345')).text();
+  assert.match(page, /<span class="price">₹13,999<\/span>/);
+  assert.match(page, /Last check abhi · roz apne aap check hota hai/);
+
+  await get(env, `/lookup?u=${encodeURIComponent(FK_URL)}`, { redirect: 'manual' });
+  assert.equal(shop.calls.length, 1, 'checked recently, so no second fetch');
+});
+
+test('a blocked first check still creates the product and explains it', async () => {
+  const shop = fakeShop({ [AMZ_URL]: 503 });
+  const env = await makeEnv({ fetchImpl: shop.fetchImpl });
+  await get(env, `/lookup?u=${encodeURIComponent(AMZ_URL)}`, { redirect: 'manual' });
+  const p = await env.store.getProduct('amazon:B0TEST1234');
+  assert.deepEqual([p.check_failures, p.last_error, p.days], [1, 'blocked (HTTP 503)', 0]);
+  const res = await get(env, '/p/amazon/B0TEST1234');
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  assert.match(body, /Amazon ne abhi daam nahi dikhaya/);
+  assert.match(body, /blocked \(HTTP 503\)/);
+  assert.match(body, /noindex/);
+});
+
+test('live checks per visitor are capped', async () => {
+  const shop = fakeShop({ [FK_URL]: fixture('flipkart.html') });
+  const env = await makeEnv({ fetchImpl: shop.fetchImpl });
+  const who = await hashId('test-salt', 'lookup:5.5.5.5');
+  await q(env, 'insert into usage (who, day, points) values ($1, $2, 60)', [who, istDay(Date.now())]);
+  const res = await get(env, `/lookup?u=${encodeURIComponent(FK_URL)}`, { redirect: 'manual', headers: { 'x-forwarded-for': '5.5.5.5' } });
+  assert.equal(res.headers.get('location'), '/p/flipkart/MOBGZ12345', 'still redirects');
+  assert.equal(shop.calls.length, 0, 'but does not fetch');
+});
+
+test('scheduled refresh: secret required, re-checks the oldest products within budget', async () => {
+  const MY = 'https://www.myntra.com/tshirts/roadster/x/1234567/buy';
+  const shop = fakeShop({ [FK_URL]: fixture('flipkart.html'), [AMZ_URL]: 503, [MY]: fixture('myntra.html') });
+  const env = await makeEnv({ fetchImpl: shop.fetchImpl, CRON_SECRET: 'cron-secret-0123456789' });
+  const old = Date.now() - STALE_MS - 1000;
+  for (const [key, store, pid, url] of [['flipkart:MOBGZ12345', 'flipkart', 'MOBGZ12345', FK_URL], ['amazon:B0TEST1234', 'amazon', 'B0TEST1234', AMZ_URL], ['myntra:1234567', 'myntra', '1234567', MY]]) {
+    await q(env, 'insert into products (key, store, pid, url, first_seen, last_seen, last_checked) values ($1, $2, $3, $4, $5, $5, $5)', [key, store, pid, url, old]);
+  }
+  await q(env, "update products set last_checked = null where key = 'myntra:1234567'");
+
+  assert.equal((await get(env, '/api/cron/refresh', { method: 'POST' })).status, 401);
+  assert.equal((await get(env, '/api/cron/refresh', { method: 'POST', headers: { 'x-cron-secret': 'wrong-secret-000000' } })).status, 401);
+  const noSecretEnv = await makeEnv({ CRON_SECRET: '' });
+  assert.equal((await get(noSecretEnv, '/api/cron/refresh', { headers: { 'x-cron-secret': '' } })).status, 401, 'disabled without a secret');
+
+  const dueOrder = (await env.store.listDue(Date.now() - STALE_MS, 10)).map((r) => r.key);
+  assert.equal(dueOrder[0], 'myntra:1234567', 'never-checked products go first');
+  assert.equal(dueOrder.length, 3);
+
+  const res = await get(env, '/api/cron/refresh', { method: 'POST', headers: { authorization: 'Bearer cron-secret-0123456789' } });
+  assert.equal(res.status, 200);
+  const summary = await res.json();
+  assert.deepEqual([summary.due, summary.checked, summary.ok], [3, 3, 2]);
+  assert.equal((await env.store.getProduct('myntra:1234567')).last_price, 449);
+  assert.equal((await env.store.getProduct('amazon:B0TEST1234')).check_failures, 1);
+
+  // Nothing is due right after a run.
+  const again = await (await get(env, '/api/cron/refresh', { headers: { 'x-cron-secret': 'cron-secret-0123456789' } })).json();
+  assert.equal(again.due, 0);
+
+  // The time budget stops a run early.
+  await q(env, 'update products set last_checked = $1', [old]);
+  let t = 0;
+  const partial = await refreshDue(env, { budgetMs: 10, concurrency: 1, clock: () => (t += 6) });
+  assert.ok(partial.checked < partial.due, `checked ${partial.checked} of ${partial.due}`);
+});
+
+test('database: failures count up and stop retries after 30; usage cap; token required', async () => {
+  const env = await makeEnv();
+  const ident = { key: 'amazon:B0TEST1234', store: 'amazon', id: 'B0TEST1234', url: AMZ_URL };
+  for (let i = 0; i < 30; i++) await env.store.markChecked({ ident, now: 1000 + i, ok: false, error: 'blocked' });
+  assert.equal((await env.store.getProduct(ident.key)).check_failures, 30);
+  assert.deepEqual(await env.store.listDue(Date.now(), 10), [], 'given up after 30 failures');
+  await env.store.markChecked({ ident, now: 2000, ok: true });
+  const p = await env.store.getProduct(ident.key);
+  assert.deepEqual([p.check_failures, p.last_error], [0, null]);
+
+  const now = Date.now();
+  assert.equal(await env.store.bumpUsage('x', now, 2), true);
+  assert.equal(await env.store.bumpUsage('x', now, 2), true);
+  assert.equal(await env.store.bumpUsage('x', now, 2), false);
+  await assert.rejects(env.rpc('list_due', { p_token: 'nope', p_before: now, p_limit: 5 }), /invalid write token/);
+  await assert.rejects(env.rpc('mark_checked', { p_token: null, p_key: 'k', p_store: 's', p_pid: 'p', p_url: 'u', p_now: 1, p_ok: true, p_error: null }), /invalid write token/);
 });

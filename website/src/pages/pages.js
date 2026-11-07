@@ -25,6 +25,23 @@ function dealCard(p) {
   </a>`;
 }
 
+/** "5 min pehle" / "3 ghante pehle" / "2 din pehle" for the latest check or report. */
+function checkedAgo(product, now) {
+  const t = Math.max(product.last_checked || 0, product.last_seen || 0);
+  const mins = Math.max(0, Math.round((now - t) / 60000));
+  if (mins < 60) return mins <= 1 ? 'abhi' : `${mins} min pehle`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} ghante pehle`;
+  return `${Math.round(hours / 24)} din pehle`;
+}
+
+function lookupForm(q) {
+  return html`<form class="lookup" action="/lookup" method="get" data-loading="Daam la rahe hain…">
+      <input name="u" type="text" inputmode="url" autocomplete="off" placeholder="Amazon, Flipkart ya Myntra ka product link paste karo" value="${q || ''}" required aria-label="Product link">
+      <button class="btn btn-primary btn-lg" type="submit">Track karo</button>
+    </form>`;
+}
+
 function grid(items) {
   return html`<div class="grid">${items.map(dealCard)}</div>`;
 }
@@ -93,15 +110,34 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
   const path = productPath(ident.store, ident.id);
   const pageUrl = `${site.base}${path}`;
 
-  if (!product || !series.length) {
+  if (!product) {
+    // Never looked up: offer a live check (Flipkart needs the full link).
     const body = html`
     <p class="crumbs"><a href="/">Home</a> › ${storeName}</p>
-    <h1>Is product ka data abhi nahi hai</h1>
-    <p class="lead">${storeName} product <code>${ident.id}</code> ki history abhi tak kisi ne record nahi ki.
-    Extension lagane wale users jaise hi yeh product dekhenge, history banni shuru ho jayegi.</p>
-    ${ident.url ? html`<div class="cta-row"><a class="btn" href="${ident.url}" rel="nofollow noopener">${storeName} par dekho</a></div>` : ''}
-    ${ctaButtons(site)}`;
-    return layout(site, { title: `${storeName} product price history | ${site.name}`, description: 'No price history yet.', path, noindex: true, body });
+    <section class="panel state">
+      <h1>Is product ko abhi track nahi kiya gaya</h1>
+      <p class="lead">${storeName} product <code>${ident.id}</code> ka daam abhi check karte hain. Uske baad hum ise roz check karenge.</p>
+      ${ident.url
+        ? html`<div class="cta-row"><a class="btn btn-primary" href="/lookup?u=${encodeURIComponent(ident.url)}" data-loading="Daam la rahe hain…">Abhi daam check karo</a></div>`
+        : html`${lookupForm('')}<p class="hint">${storeName} ke product ka poora link paste karo.</p>`}
+    </section>`;
+    return layout(site, { title: `${storeName} product price history | ${site.name}`, description: 'Track this product.', path, noindex: true, body });
+  }
+
+  if (!series.length) {
+    // Known product, but no price yet (the shop did not give us the page).
+    const body = html`
+    <p class="crumbs"><a href="/">Home</a> › ${storeName}</p>
+    <section class="panel state">
+      <h1>${product.title || `${storeName} product ${ident.id}`}</h1>
+      <p class="lead">${storeName} ne abhi daam nahi dikhaya${product.last_error ? html` <span class="muted">(${product.last_error})</span>` : ''}.
+      Hum kuch ghante me apne aap dobara check karenge, aur extension users ke dekhte hi bhi daam yahan aa jayega.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/lookup?u=${encodeURIComponent(product.url)}" data-loading="Daam la rahe hain…">Dobara try karo</a>
+        <a class="btn" href="${product.url}" rel="nofollow noopener">${storeName} par dekho</a>
+      </div>
+    </section>`;
+    return layout(site, { title: `${storeName} product price history | ${site.name}`, description: 'Price check pending.', path, noindex: true, body });
   }
 
   const s = PTInsights.stats(series, now);
@@ -126,7 +162,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
         <span class="price">${fmt(s.current)}</span>
         ${dc ? html`<span class="mrp">${fmt(product.mrp)}</span><span class="off">${dc.claimedPct}% off MRP</span>` : ''}
       </div>
-      <p class="updated">${storeName} par users ka dekha hua daam, last update ${PTInsights.daysAgoText(product.last_seen, now, 'hi')}. Kharidne se pehle store par final daam check karein.</p>
+      <p class="updated">Last check ${checkedAgo(product, now)} · roz apne aap check hota hai. Kharidne se pehle ${storeName} par final daam dekh lein.</p>
       <p class="verdict v-${v.level}">${v.text}</p>
       ${warning ? html`<p class="warn">⚠️ ${warning}</p>` : ''}
       <div class="cta-row">
@@ -146,7 +182,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
       <div><dt>Sabse kam</dt><dd>${fmt(s.min)}</dd><small>${product.low_day ? formatDay(product.low_day) : ''}</small></div>
       <div><dt>Sabse zyada</dt><dd>${fmt(s.max)}</dd></div>
       <div><dt>Typical (90 din)</dt><dd>${product.typical_price ? fmt(product.typical_price) : fmt(s.median)}</dd></div>
-      <div><dt>Data</dt><dd>${product.days} din</dd><small>${product.reporters} users</small></div>
+      <div><dt>Tracking</dt><dd>${product.days} din</dd><small>${product.reporters ? `${product.reporters} users + roz check` : 'roz check'}</small></div>
     </dl>
   </section>
 
