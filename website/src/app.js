@@ -7,7 +7,7 @@ import { refreshProduct, refreshDue, isStale } from './lib/refresh.js';
 import { outboundUrl, affiliateActive, resolveProduct } from './lib/links.js';
 import { istDay } from './lib/days.js';
 import { CSS, JS, FAVICON } from './pages/assets.js';
-import { homePage, dealsPage, productPage, disclosurePage, privacyPage, notFoundPage } from './pages/pages.js';
+import { homePage, dealsPage, productPage, disclosurePage, privacyPage, botPage, notFoundPage } from './pages/pages.js';
 
 /** Live price fetches a single visitor can trigger per day (each pasted link). */
 const LOOKUP_FETCHES_PER_IP = 60;
@@ -153,6 +153,7 @@ export async function handle(request, env) {
 
   if (path === '/disclosure') return page(disclosurePage(site), { maxAge: 3600 });
   if (path === '/privacy') return page(privacyPage(site), { maxAge: 3600 });
+  if (path === '/bot') return page(botPage(site), { maxAge: 3600 });
   if (path === '/static/site.css') return asset(CSS, 'text/css; charset=utf-8');
   if (path === '/static/site.js') return asset(JS, 'text/javascript; charset=utf-8');
   if (path === '/favicon.svg') return asset(FAVICON, 'image/svg+xml');

@@ -7,7 +7,7 @@ import { resolveProduct, extractUrl } from '../src/lib/links.js';
 import { identFromPath } from '../src/lib/paths.js';
 import { validatePoint, LIMITS, hashId } from '../src/lib/ingest.js';
 import { supabaseRpc } from '../src/lib/supabase.js';
-import { fetchProduct } from '../src/lib/fetcher.js';
+import { fetchProduct, botUserAgent } from '../src/lib/fetcher.js';
 import { refreshDue, STALE_MS } from '../src/lib/refresh.js';
 import fs from 'node:fs';
 
@@ -414,19 +414,20 @@ test('fetchProduct reads the price, and reports blocks, captchas and timeouts', 
   assert.equal(ok.ok, true);
   assert.equal(ok.product.price, 13999);
   assert.equal(ok.product.key, 'flipkart:MOBGZ12345');
-  assert.match(shop.calls[0].init.headers['accept-language'], /en-IN/);
+  assert.equal(shop.calls[0].init.headers['user-agent'], 'Mozilla/5.0 (compatible; DaamDekhoBot/0.1)', 'says openly that it is a bot');
+  assert.equal(botUserAgent('Daam Dekho!', 'https://site.test/'), 'Mozilla/5.0 (compatible; DaamDekhoBot/0.1; +https://site.test/bot)');
 
-  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: 529 }).fetchImpl }), { ok: false, error: 'blocked (HTTP 529)' });
+  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: 529 }).fetchImpl }), { ok: false, blocked: true, error: 'blocked (HTTP 529)' });
   assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: 500 }).fetchImpl }), { ok: false, error: 'HTTP 500' });
   const captcha = '<html><body>Enter the characters you see below</body></html>';
-  assert.deepEqual(await fetchProduct({ url: AMZ_URL }, { fetchImpl: fakeShop({ [AMZ_URL]: captcha }).fetchImpl }), { ok: false, error: 'blocked (captcha)' });
-  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: '<html><body>hi</body></html>' }).fetchImpl }), { ok: false, error: 'price not found' });
+  assert.deepEqual(await fetchProduct({ url: AMZ_URL }, { fetchImpl: fakeShop({ [AMZ_URL]: captcha }).fetchImpl }), { ok: false, blocked: true, error: 'blocked (captcha)' });
+  assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: '<html><head><title>Oops</title></head><body>hi</body></html>' }).fetchImpl }), {
+    ok: false,
+    error: 'price not found (0 KB, "Oops")',
+  });
   const slow = async (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
   assert.deepEqual(await fetchProduct(ident, { fetchImpl: slow, timeoutMs: 20 }), { ok: false, error: 'timeout' });
 
-  const proxied = fakeShop({ ['https://scraper.example/?u=' + encodeURIComponent(FK_URL)]: fixture('flipkart.html') });
-  const viaProxy = await fetchProduct(ident, { fetchImpl: proxied.fetchImpl, proxyTemplate: 'https://scraper.example/?u={url}' });
-  assert.equal(viaProxy.ok, true, 'optional scraping-service template');
 });
 
 test('pasting a link fetches the live price once, then serves it from the database', async () => {
@@ -506,8 +507,13 @@ test('scheduled refresh: secret required, re-checks the oldest products within b
   const again = await (await get(env, '/api/cron/refresh', { headers: { 'x-cron-secret': 'cron-secret-0123456789' } })).json();
   assert.equal(again.due, 0);
 
-  // The time budget stops a run early.
+  // A failed product backs off: not due again after 6h, only after 12h.
   await q(env, 'update products set last_checked = $1', [old]);
+  assert.deepEqual((await env.store.listDue(Date.now() - STALE_MS, 10)).map((r) => r.key).sort(), ['flipkart:MOBGZ12345', 'myntra:1234567']);
+  await q(env, "update products set last_checked = $1 where key = 'amazon:B0TEST1234'", [Date.now() - 2 * STALE_MS - 1000]);
+  assert.equal((await env.store.listDue(Date.now() - STALE_MS, 10)).length, 3);
+
+  // The time budget stops a run early.
   let t = 0;
   const partial = await refreshDue(env, { budgetMs: 10, concurrency: 1, clock: () => (t += 6) });
   assert.ok(partial.checked < partial.due, `checked ${partial.checked} of ${partial.due}`);
@@ -529,4 +535,19 @@ test('database: failures count up and stop retries after 30; usage cap; token re
   assert.equal(await env.store.bumpUsage('x', now, 2), false);
   await assert.rejects(env.rpc('list_due', { p_token: 'nope', p_before: now, p_limit: 5 }), /invalid write token/);
   await assert.rejects(env.rpc('mark_checked', { p_token: null, p_key: 'k', p_store: 's', p_pid: 'p', p_url: 'u', p_now: 1, p_ok: true, p_error: null }), /invalid write token/);
+});
+
+test('when a shop refuses, the rest of its products wait for a later run', async () => {
+  const FK2 = 'https://www.flipkart.com/other/p/itm222?pid=MOBOTHER22';
+  const shop = fakeShop({ [FK_URL]: 429, [FK2]: fixture('flipkart.html'), [AMZ_URL]: fixture('amazon.html') });
+  const env = await makeEnv({ fetchImpl: shop.fetchImpl });
+  for (const [key, store, pid, url] of [['flipkart:MOBGZ12345', 'flipkart', 'MOBGZ12345', FK_URL], ['flipkart:MOBOTHER22', 'flipkart', 'MOBOTHER22', FK2], ['amazon:B0TEST1234', 'amazon', 'B0TEST1234', AMZ_URL]]) {
+    await q(env, 'insert into products (key, store, pid, url, first_seen, last_seen) values ($1, $2, $3, $4, 1, 1)', [key, store, pid, url]);
+  }
+  const summary = await refreshDue(env, { concurrency: 1 });
+  assert.deepEqual(summary.paused, ['flipkart']);
+  assert.deepEqual(shop.calls.map((c) => c.url).sort(), [AMZ_URL, FK_URL].sort(), 'second Flipkart product not requested');
+  assert.equal((await env.store.getProduct('flipkart:MOBOTHER22')).last_checked, null, 'left for the next run');
+  assert.equal((await env.store.getProduct('amazon:B0TEST1234')).last_price, 1299);
+  assert.match(await (await get(env, '/bot')).text(), /bypass karne ki koshish nahi karte/);
 });
