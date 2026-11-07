@@ -1,0 +1,14 @@
+{
+  "appName": {
+    "message": "DaamDekho - Price History & Alerts",
+    "description": "Extension name. Placeholder brand: change it here only."
+  },
+  "appShortName": {
+    "message": "DaamDekho",
+    "description": "Short name shown in the panel and popup."
+  },
+  "appDescription": {
+    "message": "Price history, fake-discount check and price-drop alerts for Amazon.in, Flipkart and Myntra.",
+    "description": "Store listing summary, max 132 characters."
+  }
+}

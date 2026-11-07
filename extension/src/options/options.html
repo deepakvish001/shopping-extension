@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1 id="app-name">DaamDekho</h1>
+      <form id="form">
+        <section>
+          <h2>General</h2>
+          <label>Language
+            <select name="lang">
+              <option value="hi">Hinglish</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" name="showPanel" /> Show the price panel on product pages</label>
+        </section>
+
+        <section>
+          <h2>Price-drop alerts</h2>
+          <label class="check"><input type="checkbox" name="notifications" /> Show notifications</label>
+          <label>Check tracked products every
+            <select name="checkIntervalHours">
+              <option value="6">6 hours</option>
+              <option value="12">12 hours</option>
+              <option value="24">24 hours</option>
+            </select>
+          </label>
+          <label>Alert when the price drops by at least
+            <span class="inline"><input type="number" name="dropThresholdPct" min="1" max="50" step="1" /> %</span>
+          </label>
+          <p class="hint">If you set a target price for a product, you are alerted only when it reaches that target.</p>
+        </section>
+
+        <section>
+          <h2>Affiliate links (owner setting)</h2>
+          <p class="hint">
+            Off by default. When on, a Flipkart or Myntra product opened from a price-drop alert, or from the popup
+            while it is a deal, goes through your affiliate network link. Links are never rewritten on page load,
+            existing affiliate links are never replaced, and Amazon links never get an affiliate tag (the Amazon
+            Associates rules do not allow it in browser extensions). Disclose this in the Chrome Web Store listing
+            before turning it on. See <code>docs/CHROME_WEB_STORE.md</code>.
+          </p>
+          <label class="check"><input type="checkbox" name="affiliateEnabled" /> Use affiliate links for deals</label>
+          <label>Flipkart link template
+            <input type="url" name="tplFlipkart" placeholder="https://your-network.example/redirect?url={url}" />
+          </label>
+          <label>Myntra link template
+            <input type="url" name="tplMyntra" placeholder="https://your-network.example/redirect?url={url}" />
+          </label>
+          <p class="hint">Use the deep-link format your affiliate network gives you. <code>{url}</code> is replaced with the encoded product URL. Must start with https://.</p>
+        </section>
+
+        <div class="row">
+          <button type="submit" class="primary">Save</button>
+          <span id="saved" role="status"></span>
+        </div>
+      </form>
+
+      <section>
+        <h2>Your data</h2>
+        <p class="hint">Price history is stored only in this browser. Nothing is sent to any server.</p>
+        <div class="row">
+          <button id="export" type="button">Export as JSON</button>
+          <button id="clear" type="button" class="danger">Delete all data</button>
+        </div>
+      </section>
+    </main>
+    <script src="../shared/settings.js"></script>
+    <script src="../shared/affiliate.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>
