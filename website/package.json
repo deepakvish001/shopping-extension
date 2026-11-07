@@ -1,0 +1,17 @@
+{
+  "name": "shopping-website",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 2 website: shared price history, product pages and deals (Cloudflare Workers + D1).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "deploy": "wrangler deploy",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "wrangler": "^4.158.0"
+  }
+}

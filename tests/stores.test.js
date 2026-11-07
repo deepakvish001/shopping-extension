@@ -42,3 +42,13 @@ test('parseINR handles rupee formats', () => {
   assert.equal(S.parseINR('₹0'), null);
   assert.equal(S.parseINR(null), null);
 });
+
+test('understands app share link shapes', () => {
+  const fk = S.identify('https://dl.flipkart.com/dl/samsung-galaxy-m35/p/itm123abc?pid=MOBGZ12345&_appId=CL');
+  assert.equal(fk.key, 'flipkart:MOBGZ12345');
+  assert.equal(fk.url, 'https://www.flipkart.com/samsung-galaxy-m35/p/itm123abc?pid=MOBGZ12345');
+  assert.equal(S.identify('https://dl.flipkart.com/s/abc123'), null, 'short links need resolving first');
+  const my = S.identify('https://www.myntra.com/7654321');
+  assert.deepEqual([my.key, my.url], ['myntra:7654321', 'https://www.myntra.com/7654321']);
+  assert.equal(S.identify('https://www.myntra.com/123'), null);
+});

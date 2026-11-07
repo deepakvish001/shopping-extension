@@ -13,7 +13,7 @@
 
   const STORES = {
     amazon: { id: 'amazon', label: 'Amazon', hosts: ['www.amazon.in', 'amazon.in'] },
-    flipkart: { id: 'flipkart', label: 'Flipkart', hosts: ['www.flipkart.com', 'flipkart.com'] },
+    flipkart: { id: 'flipkart', label: 'Flipkart', hosts: ['www.flipkart.com', 'flipkart.com', 'dl.flipkart.com'] },
     myntra: { id: 'myntra', label: 'Myntra', hosts: ['www.myntra.com', 'myntra.com'] },
   };
 
@@ -57,18 +57,22 @@
     }
 
     if (store === 'flipkart') {
-      const item = u.pathname.match(FLIPKART_ITEM_RE);
+      // App share links look like dl.flipkart.com/dl/<normal path>
+      const path = u.hostname.toLowerCase() === 'dl.flipkart.com' ? u.pathname.replace(/^\/dl(?=\/)/, '') : u.pathname;
+      const item = path.match(FLIPKART_ITEM_RE);
       if (!item) return null;
       const pid = (u.searchParams.get('pid') || '').trim().toUpperCase();
       const id = pid || item[1].toLowerCase();
-      const canonical = `https://www.flipkart.com${u.pathname}` + (pid ? `?pid=${encodeURIComponent(pid)}` : '');
+      const canonical = `https://www.flipkart.com${path}` + (pid ? `?pid=${encodeURIComponent(pid)}` : '');
       return make(store, id, canonical);
     }
 
     if (store === 'myntra') {
       const m = u.pathname.match(MYNTRA_ID_RE);
-      if (!m) return null;
-      return make(store, m[1], `https://www.myntra.com${u.pathname}`);
+      if (m) return make(store, m[1], `https://www.myntra.com${u.pathname}`);
+      const short = u.pathname.match(/^\/(\d{5,})\/?$/); // myntra.com/<style id>
+      if (short) return make(store, short[1], `https://www.myntra.com/${short[1]}`);
+      return null;
     }
 
     return null;
