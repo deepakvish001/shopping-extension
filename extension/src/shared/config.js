@@ -12,7 +12,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const SITE_URL = '';
+  const SITE_URL = 'https://daamdekho-three.vercel.app';
 
   function siteUrl() {
     return SITE_URL.replace(/\/+$/, '');

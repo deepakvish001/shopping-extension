@@ -38,8 +38,9 @@ function extensionCopy() {
   fs.cpSync(SRC_EXT, dir, { recursive: true });
   const cfg = path.join(dir, 'src', 'shared', 'config.js');
   const src = fs.readFileSync(cfg, 'utf8');
-  assert.ok(src.includes("const SITE_URL = '';"));
-  fs.writeFileSync(cfg, src.replace("const SITE_URL = '';", `const SITE_URL = '${SITE}';`));
+  const re = /const SITE_URL = '[^']*';/;
+  assert.ok(re.test(src), 'config.js has a SITE_URL line');
+  fs.writeFileSync(cfg, src.replace(re, `const SITE_URL = '${SITE}';`));
   return dir;
 }
 

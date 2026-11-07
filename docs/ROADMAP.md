@@ -22,17 +22,19 @@ Before publishing:
 1. Test on 10+ real products per shop (phones, fashion, out-of-stock,
    variants). Fix selectors where needed.
 2. Pick the final name (`_locales/en/messages.json`, `SITE_NAME`).
-3. Deploy the website and set `SITE_URL` in `extension/src/shared/config.js`.
-4. Host the privacy policy (the website's `/privacy` page, or `docs/PRIVACY.md`).
+3. Website is live and `SITE_URL` is set (v0.2.1). If you add a custom
+   domain, update `extension/src/shared/config.js`.
+4. Privacy policy URL: https://daamdekho-three.vercel.app/privacy
 5. Chrome Web Store developer account (one-time US$5), fill the privacy
    form as described in `docs/CHROME_WEB_STORE.md`, submit `npm run pack` output.
 
 Next ideas: Ajio, Nykaa, Croma, Tata CLiQ; price-drop badge on the toolbar
 icon; "Join our Telegram" link once phase 3 exists.
 
-## Phase 2: Website (v0.1.0 ready to deploy)
+## Phase 2: Website (live: https://daamdekho-three.vercel.app)
 
-Done: Cloudflare Worker + D1; upload API with validation, per-day medians and
+Done: Vercel Function (Mumbai) + Supabase Postgres with RLS and token-gated
+write functions; upload API with validation, per-day medians and
 rate limits; history API for the extension; product pages with chart,
 verdict, fake-sale warning, WhatsApp-friendly preview tags and share buttons;
 honest deals list (median-based); paste-a-link lookup including app short
@@ -40,7 +42,9 @@ links; outbound redirects with affiliate templates and disclosure; sitemap,
 privacy, disclosure pages. See `website/README.md`.
 
 Next:
-- Deploy, add a custom domain, submit the sitemap to Google Search Console.
+- Custom domain, then submit the sitemap to Google Search Console.
+- Upgrade Vercel to Pro before turning on affiliate templates (Hobby is
+  non-commercial only).
 - Amazon Creators API (after qualifying Associates sales) to show
   API-sourced Amazon prices with Associates links, per Amazon's rules.
 - Category pages ("phones under ₹15,000 at their lowest") for search traffic.
