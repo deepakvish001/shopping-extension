@@ -41,8 +41,12 @@ export async function fetchProduct(ident, { fetchImpl = (...a) => fetch(...a), u
   if (!product || !product.price) {
     if (BLOCKED_RE.test(html.slice(0, 200_000))) return { ok: false, blocked: true, error: 'blocked (captcha)' };
     // Say which page came back, to tell "product unavailable" from "unexpected layout".
-    const title = ((document.querySelector('title') || {}).textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-    return { ok: false, error: `price not found (${Math.round(html.length / 1024)} KB${title ? `, "${title}"` : ''})` };
+    const text = (sel) => ((document.querySelector(sel) || {}).textContent || '').replace(/\s+/g, ' ').trim();
+    const title = text('title').slice(0, 80);
+    const availability = text('#availability').slice(0, 60);
+    const prices = document.querySelectorAll('.a-price, [class*="price"]').length;
+    const notes = [`${Math.round(html.length / 1024)} KB`, title && `"${title}"`, availability && `availability: ${availability}`, `${prices} price elements`];
+    return { ok: false, error: `price not found (${notes.filter(Boolean).join(', ')})` };
   }
   return { ok: true, product };
 }

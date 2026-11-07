@@ -423,7 +423,7 @@ test('fetchProduct reads the price, and reports blocks, captchas and timeouts', 
   assert.deepEqual(await fetchProduct({ url: AMZ_URL }, { fetchImpl: fakeShop({ [AMZ_URL]: captcha }).fetchImpl }), { ok: false, blocked: true, error: 'blocked (captcha)' });
   assert.deepEqual(await fetchProduct(ident, { fetchImpl: fakeShop({ [FK_URL]: '<html><head><title>Oops</title></head><body>hi</body></html>' }).fetchImpl }), {
     ok: false,
-    error: 'price not found (0 KB, "Oops")',
+    error: 'price not found (0 KB, "Oops", 0 price elements)',
   });
   const slow = async (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
   assert.deepEqual(await fetchProduct(ident, { fetchImpl: slow, timeoutMs: 20 }), { ok: false, error: 'timeout' });

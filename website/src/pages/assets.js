@@ -66,8 +66,9 @@ h2 { font-size: 22px; margin: 36px 0 14px; letter-spacing: -.01em; }
 .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); display: inline-block; }
 .hero-title { font-size: clamp(36px, 8.4vw, 78px); font-weight: 900; line-height: 1.02; letter-spacing: -.035em; margin: 0 0 22px; }
 .hero-title span { display: block; }
-.hero-title .hl { display: inline-block; margin-top: 8px; padding: 0 .14em .04em; text-transform: uppercase;
-  background: linear-gradient(transparent 58%, var(--accent-soft) 58%); border-bottom: .09em solid var(--accent); }
+.hero-title .hl { display: inline; font-size: .8em; line-height: 1.32; padding: 0 .12em; text-transform: uppercase;
+  background: linear-gradient(transparent 56%, var(--accent-soft) 56%); border-bottom: .09em solid var(--accent);
+  -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .hero-sub { font-size: clamp(17px, 2.6vw, 22px); color: var(--muted); margin: 0 auto 30px; max-width: 640px; line-height: 1.5; }
 .hero-sub mark { background: var(--accent); color: #3b2f00; padding: 1px 10px; border-radius: 8px; font-weight: 800; box-shadow: 0 2px 0 rgba(0,0,0,.08); }
 .lookup { display: flex; flex-direction: column; gap: 10px; max-width: 760px; margin: 0 auto 8px; }
