@@ -213,10 +213,12 @@
 
   /**
    * Extract the product on `doc`, which was loaded from `url`.
+   * @param {{freshPage?: boolean}} [opts] freshPage: `doc` was just loaded from
+   *   `url` (background/server fetch), so it cannot be a stale in-page variant.
    * @returns {null | {store, id, key, url, title, price, mrp, image, inStock}}
    *   `price` may be null when the page is a product page but no price was found.
    */
-  function extract(doc, url) {
+  function extract(doc, url, opts = {}) {
     const ident = PTStores.identify(url);
     if (!ident || !doc) return null;
     const sel = SELECTORS[ident.store];
@@ -229,7 +231,9 @@
 
     // Amazon swaps variants in place: the URL can already name the new ASIN
     // while the page still shows the old one. Do not record a price then.
-    if (ident.store === 'amazon') {
+    // A freshly loaded page shows what that link shows (Amazon may open a
+    // default variant), so the check does not apply.
+    if (ident.store === 'amazon' && !opts.freshPage) {
       const asinInput = doc.querySelector('input#ASIN, input[name="ASIN"]');
       const pageAsin = asinInput && (asinInput.getAttribute('value') || '').trim().toUpperCase();
       if (pageAsin && pageAsin !== ident.id) price = null;

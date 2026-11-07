@@ -2,11 +2,21 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "buildCommand": "",
-  "installCommand": "",
+  "installCommand": "npm ci --omit=dev",
   "outputDirectory": "website/public",
-  "regions": ["bom1"],
+  "regions": [
+    "bom1"
+  ],
   "functions": {
-    "api/index.mjs": { "includeFiles": "extension/src/shared/**" }
+    "api/index.mjs": {
+      "includeFiles": "extension/src/shared/**",
+      "maxDuration": 60
+    }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ]
 }

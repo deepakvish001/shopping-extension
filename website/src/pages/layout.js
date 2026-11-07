@@ -30,8 +30,8 @@ ${page.image ? html`<meta property="og:image" content="${page.image}">` : ''}
 </head>
 <body>
 <header class="top"><div class="wrap">
-  <a class="logo" href="/"><img src="/favicon.svg" alt="" width="28" height="28">${site.name}</a>
-  <nav><a href="/deals">Deals</a><a href="/#how">Kaise kaam karta hai</a>${site.extensionUrl ? html`<a href="${site.extensionUrl}" rel="noopener">Extension</a>` : ''}</nav>
+  <a class="logo" href="/"><img src="/favicon.svg" alt="" width="38" height="38"><span><b>${site.name}</b><small>Price history · Fake sale check</small></span></a>
+  <nav><a class="nav-keep" href="/deals">Deals</a><a href="/#how">Kaise kaam karta hai</a>${site.extensionUrl ? html`<a class="btn btn-primary" href="${site.extensionUrl}" rel="noopener">Extension lo</a>` : ''}</nav>
 </div></header>
 <main><div class="wrap">
 ${page.body}

@@ -6,6 +6,15 @@ import { layout } from './layout.js';
 
 const fmt = PTInsights.formatINR;
 
+// Simple line icons (our own), drawn with currentColor.
+const svg = (d) => raw(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`);
+const ICON = {
+  chart: svg('<path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/>'),
+  shield: svg('<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5L15.5 10"/>'),
+  bell: svg('<path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/>'),
+  arrow: svg('<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>'),
+};
+
 function productPath(store, pid) {
   return `/p/${encodeURIComponent(store)}/${encodeURIComponent(pid)}`;
 }
@@ -25,6 +34,23 @@ function dealCard(p) {
   </a>`;
 }
 
+/** "5 min pehle" / "3 ghante pehle" / "2 din pehle" for the latest check or report. */
+function checkedAgo(product, now) {
+  const t = Math.max(product.last_checked || 0, product.last_seen || 0);
+  const mins = Math.max(0, Math.round((now - t) / 60000));
+  if (mins < 60) return mins <= 1 ? 'abhi' : `${mins} min pehle`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} ghante pehle`;
+  return `${Math.round(hours / 24)} din pehle`;
+}
+
+function lookupForm(q) {
+  return html`<form class="lookup" action="/lookup" method="get" data-loading="Daam la rahe hain…">
+      <input name="u" type="text" inputmode="url" autocomplete="off" placeholder="Amazon, Flipkart ya Myntra ka product link paste karo" value="${q || ''}" required aria-label="Product link">
+      <button class="btn btn-primary btn-lg" type="submit">${ICON.arrow} Track karo</button>
+    </form>`;
+}
+
 function grid(items) {
   return html`<div class="grid">${items.map(dealCard)}</div>`;
 }
@@ -42,32 +68,40 @@ function ctaButtons(site) {
 export function homePage(site, { deals, recent, error, q }) {
   const body = html`
   <section class="hero">
-    <h1>Sale asli hai ya nakli? Pehle price history dekho.</h1>
-    <p class="lead">Amazon, Flipkart ya Myntra ka product link paste karo. Purane daam, sabse kam daam aur "fake sale" ka sach turant.</p>
-    <form class="lookup" action="/lookup" method="get">
-      <input name="u" type="text" inputmode="url" autocomplete="off" placeholder="Product link paste karo (app ka share link bhi chalega)" value="${q || ''}" required aria-label="Product link">
-      <button class="btn btn-primary" type="submit">History dekho</button>
-    </form>
+    <span class="pill"><i></i>Amazon · Flipkart · Myntra</span>
+    <h1 class="hero-title"><span>Sale asli hai ya nakli?</span><span class="hl">Daam ki history batayegi</span></h1>
+    <p class="hero-sub">Product ka link paste karo, store se abhi ka daam aur purani history turant.<br><mark>Fake sale</mark> aur MRP ka nakli discount pakda jata hai.</p>
+    ${lookupForm(q)}
+    <p class="hint">App ka share link bhi chalega · bilkul free</p>
     ${error ? html`<p class="notice" role="alert">${error}</p>` : ''}
     ${ctaButtons(site)}
+  </section>
+
+  <section class="features" aria-label="Features">
+    <article class="feature"><span class="ico">${ICON.chart}</span><h3>Asli price history</h3>
+      <p>Link paste karte hi store se abhi ka daam. Har check aur har user ke daam se history banti hai: sabse kam, sabse zyada, typical.</p></article>
+    <article class="feature"><span class="ico">${ICON.shield}</span><h3>Fake sale pakdo</h3>
+      <p>Sale se pehle daam badhaya? MRP ka nakli discount? Median wala hisaab sach dikhata hai.</p></article>
+    <article class="feature"><span class="ico">${ICON.bell}</span><h3>Daam girne par alert</h3>
+      <p>Extension me target daam set karo. Daam girte hi notification milega.</p></article>
   </section>
 
   <h2>Aaj ke asli price drops</h2>
   ${deals.length
     ? html`${grid(deals)}<p class="hint"><a href="/deals">Saare deals dekho →</a></p>`
-    : html`<p class="empty">Abhi koi bada drop nahi mila. Jaise jaise log products dekhenge, yahan asli deals dikhengi.</p>`}
+    : html`<p class="empty">Abhi koi bada drop nahi mila. Jaise jaise products track honge, yahan asli deals dikhengi.</p>`}
 
-  ${recent.length ? html`<h2>Haal hi me dekhe gaye</h2>${grid(recent)}` : ''}
+  ${recent.length ? html`<h2>Haal hi me track kiye gaye</h2>${grid(recent)}` : ''}
 
   <h2 id="how">Kaise kaam karta hai</h2>
   <ol class="steps">
-    <li><strong>Link paste karo ya extension lagao.</strong> Extension Amazon, Flipkart aur Myntra ke product page par hi price history dikha deta hai.</li>
+    <li><strong>Link paste karo.</strong> Hum turant store se abhi ka daam laate hain, aur us din se product ki history banni shuru ho jati hai.</li>
     <li><strong>Sach dekho.</strong> Sabse kam, sabse zyada aur typical daam. MRP wala nakli discount aur "pehle daam badhao, phir sale" wala khel pakda jata hai.</li>
-    <li><strong>Sahi waqt par kharido.</strong> Target daam set karo, daam girte hi alert milega. Dosto ko WhatsApp par share karo.</li>
+    <li><strong>Sahi waqt par kharido.</strong> Extension me target daam set karo, daam girte hi alert. Dosto ko WhatsApp par share karo.</li>
   </ol>`;
   return layout(site, {
     title: `${site.name}: Price history & fake sale check for Amazon, Flipkart, Myntra`,
-    description: 'Amazon.in, Flipkart aur Myntra ki price history, sabse kam daam aur fake sale check. Free.',
+    description: 'Amazon.in, Flipkart aur Myntra ki price history, sabse kam daam aur fake sale check. Link paste karo, free.',
     path: '/',
     body,
   });
@@ -93,15 +127,34 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
   const path = productPath(ident.store, ident.id);
   const pageUrl = `${site.base}${path}`;
 
-  if (!product || !series.length) {
+  if (!product) {
+    // Never looked up: offer a live check (Flipkart needs the full link).
     const body = html`
     <p class="crumbs"><a href="/">Home</a> › ${storeName}</p>
-    <h1>Is product ka data abhi nahi hai</h1>
-    <p class="lead">${storeName} product <code>${ident.id}</code> ki history abhi tak kisi ne record nahi ki.
-    Extension lagane wale users jaise hi yeh product dekhenge, history banni shuru ho jayegi.</p>
-    ${ident.url ? html`<div class="cta-row"><a class="btn" href="${ident.url}" rel="nofollow noopener">${storeName} par dekho</a></div>` : ''}
-    ${ctaButtons(site)}`;
-    return layout(site, { title: `${storeName} product price history | ${site.name}`, description: 'No price history yet.', path, noindex: true, body });
+    <section class="panel state">
+      <h1>Is product ko abhi track nahi kiya gaya</h1>
+      <p class="lead">${storeName} product <code>${ident.id}</code> ka daam abhi store se check karte hain.</p>
+      ${ident.url
+        ? html`<div class="cta-row"><a class="btn btn-primary" href="/lookup?u=${encodeURIComponent(ident.url)}" data-loading="Daam la rahe hain…">Abhi daam check karo</a></div>`
+        : html`${lookupForm('')}<p class="hint">${storeName} ke product ka poora link paste karo.</p>`}
+    </section>`;
+    return layout(site, { title: `${storeName} product price history | ${site.name}`, description: 'Track this product.', path, noindex: true, body });
+  }
+
+  if (!series.length) {
+    // Known product, but no price yet (the shop did not give us the page).
+    const body = html`
+    <p class="crumbs"><a href="/">Home</a> › ${storeName}</p>
+    <section class="panel state">
+      <h1>${product.title || `${storeName} product ${ident.id}`}</h1>
+      <p class="lead">${storeName} ne abhi daam nahi dikhaya${product.last_error ? html` <span class="muted">(${product.last_error})</span>` : ''}.
+      Kuch ghante baad dobara try karo; extension users ke dekhte hi bhi daam yahan aa jayega.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/lookup?u=${encodeURIComponent(product.url)}" data-loading="Daam la rahe hain…">Dobara try karo</a>
+        <a class="btn" href="${product.url}" rel="nofollow noopener">${storeName} par dekho</a>
+      </div>
+    </section>`;
+    return layout(site, { title: `${storeName} product price history | ${site.name}`, description: 'Price check pending.', path, noindex: true, body });
   }
 
   const s = PTInsights.stats(series, now);
@@ -126,7 +179,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
         <span class="price">${fmt(s.current)}</span>
         ${dc ? html`<span class="mrp">${fmt(product.mrp)}</span><span class="off">${dc.claimedPct}% off MRP</span>` : ''}
       </div>
-      <p class="updated">${storeName} par users ka dekha hua daam, last update ${PTInsights.daysAgoText(product.last_seen, now, 'hi')}. Kharidne se pehle store par final daam check karein.</p>
+      <p class="updated">Last check ${checkedAgo(product, now)}. Kharidne se pehle ${storeName} par final daam dekh lein.</p>
       <p class="verdict v-${v.level}">${v.text}</p>
       ${warning ? html`<p class="warn">⚠️ ${warning}</p>` : ''}
       <div class="cta-row">
@@ -146,7 +199,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
       <div><dt>Sabse kam</dt><dd>${fmt(s.min)}</dd><small>${product.low_day ? formatDay(product.low_day) : ''}</small></div>
       <div><dt>Sabse zyada</dt><dd>${fmt(s.max)}</dd></div>
       <div><dt>Typical (90 din)</dt><dd>${product.typical_price ? fmt(product.typical_price) : fmt(s.median)}</dd></div>
-      <div><dt>Data</dt><dd>${product.days} din</dd><small>${product.reporters} users</small></div>
+      <div><dt>Tracking</dt><dd>${product.days} din</dd><small>${product.reporters ? `${product.reporters} users + server checks` : 'server checks'}</small></div>
     </dl>
   </section>
 
@@ -200,6 +253,21 @@ export function privacyPage(site) {
   <p>Extension me setting band karte hi upload ruk jata hai aur us browser ki random id mit jaati hai.</p>
   </article>`;
   return layout(site, { title: `Privacy | ${site.name}`, description: 'What data is collected and why.', path: '/privacy', body });
+}
+
+export function botPage(site) {
+  const body = html`<article class="prose">
+  <h1>${site.name}Bot</h1>
+  <p>${site.name} ek free price-history website hai. Jab koi visitor product ka link paste karta hai, ya koi tracked product
+  dobara check hona hota hai, to hamara server us product ka page ek baar kholta hai aur sirf daam, naam aur image padhta hai.</p>
+  <ul>
+    <li>Requests apna naam saaf batati hain: user agent me <code>${site.name}Bot</code> aur is page ka link hota hai.</li>
+    <li>Ek product zyada se zyada har 6 ghante me ek baar check hota hai; fail hone par aur der se.</li>
+    <li>Agar store mana karta hai (403/429/captcha), to hum us run me us store ke baaki products chhod dete hain, aur bot protection ko bypass karne ki koshish nahi karte.</li>
+  </ul>
+  <p>Store owners: is bot ko rokne ke liye uska user agent block kar dein, ya humse rabta karein.</p>
+  </article>`;
+  return layout(site, { title: `${site.name}Bot | ${site.name}`, description: 'About our price-check bot.', path: '/bot', body });
 }
 
 export function notFoundPage(site) {

@@ -8,7 +8,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
   try {
     const doc = new DOMParser().parseFromString(String(msg.html || ''), 'text/html');
-    sendResponse(PTExtract.extract(doc, msg.url));
+    sendResponse(PTExtract.extract(doc, msg.url, { freshPage: true }));
   } catch (_) {
     sendResponse(null);
   }

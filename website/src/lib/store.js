@@ -3,7 +3,7 @@
 import { istDay, dayStart, DAY_MS } from './days.js';
 
 const HISTORY_DAYS = 730;
-const NUMERIC = ['mrp', 'last_price', 'low_price', 'high_price', 'typical_price', 'first_seen', 'last_seen', 'days', 'reporters'];
+const NUMERIC = ['mrp', 'last_price', 'low_price', 'high_price', 'typical_price', 'first_seen', 'last_seen', 'last_checked', 'check_failures', 'days', 'reporters'];
 
 function normalise(row) {
   if (!row) return null;
@@ -38,6 +38,30 @@ export function createStore(rpc, { writeToken } = {}) {
 
     async recordClick(key) {
       await rpc('record_click', { p_token: writeToken, p_key: key });
+    },
+
+    /** Record a server check (creates the product row on first sight). */
+    async markChecked({ ident, now, ok, error }) {
+      await rpc('mark_checked', {
+        p_token: writeToken,
+        p_key: ident.key,
+        p_store: ident.store,
+        p_pid: ident.id,
+        p_url: ident.url,
+        p_now: now,
+        p_ok: !!ok,
+        p_error: error || null,
+      });
+    },
+
+    /** Products whose last check is older than `before`: [{key, store, pid, url, last_checked}]. */
+    async listDue(before, limit = 30) {
+      return ((await rpc('list_due', { p_token: writeToken, p_before: before, p_limit: limit })) || []).map(normalise);
+    },
+
+    /** Count one use for `who` today; false when the daily limit is reached. */
+    async bumpUsage(who, now, limit) {
+      return (await rpc('bump_usage', { p_token: writeToken, p_who: who, p_now: now, p_limit: limit })) === true;
     },
 
     /** @returns {Promise<{accepted: number} | {error: 'rate_limited'}>} */

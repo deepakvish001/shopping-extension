@@ -30,6 +30,12 @@ test('Amazon: no price while the page still shows another variant', () => {
   assert.equal(p.price, null);
 });
 
+test('Amazon: a freshly loaded page counts even when Amazon opened a default variant', () => {
+  const p = extract(load('amazon.html'), 'https://www.amazon.in/dp/B0PARENT99', { freshPage: true });
+  assert.equal(p.key, 'amazon:B0PARENT99');
+  assert.equal(p.price, 1299);
+});
+
 test('Flipkart: JSON-LD first, MRP from the page', () => {
   const p = extract(load('flipkart.html'), 'https://www.flipkart.com/samsung-galaxy-m35/p/itm123abc?pid=MOBGZ12345');
   assert.equal(p.price, 13999);
