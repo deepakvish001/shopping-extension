@@ -37,7 +37,7 @@ export async function fetchProduct(ident, { fetchImpl = (...a) => fetch(...a), u
   if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
   const html = (await res.text()).slice(0, MAX_HTML);
   const { document } = parseHTML(html);
-  const product = PTExtract.extract(document, ident.url);
+  const product = PTExtract.extract(document, ident.url, { freshPage: true });
   if (!product || !product.price) {
     if (BLOCKED_RE.test(html.slice(0, 200_000))) return { ok: false, blocked: true, error: 'blocked (captcha)' };
     // Say which page came back, to tell "product unavailable" from "unexpected layout".
