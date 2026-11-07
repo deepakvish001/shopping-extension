@@ -22,7 +22,9 @@ browser / extension ──► Vercel Function api/index.mjs (region bom1, Mumbai
 | `/p/<store>/<id>` | Product page: price, verdict, fake-sale warning, chart, stats, WhatsApp/Telegram share, buy button. Open Graph tags give a rich preview on WhatsApp |
 | `/deals` | Products at least 5% under their 90-day median price |
 | `/go/<store>/<id>` | Outbound "buy" redirect (counts clicks, applies affiliate rules) |
-| `/lookup?u=...` | Resolves a pasted link, following `amzn.in`, `dl.flipkart.com/s`, `fkrt.it`, `myntr.it` redirects through the shops' own hosts only |
+| `/lookup?u=...` | Resolves a pasted link (app short links too, following redirects through the shops' own hosts only) and fetches the live price if the product is new or was checked more than 6 hours ago |
+| `/api/cron/refresh` | Re-checks the products checked longest ago (needs `CRON_SECRET`; called by the schedule below) |
+| `/bot` | Explains the price-check bot to shop owners |
 | `POST /api/v1/prices` | Price reports from extensions whose users opted in |
 | `GET /api/v1/history/<store>/<id>` | Daily price series for the extension |
 | `/sitemap.xml`, `/robots.txt`, `/privacy`, `/disclosure` | SEO and policy pages |
@@ -32,6 +34,37 @@ latest wins); pages show the daily **median** across reporters, so a single
 wrong or fake report cannot move a price once a few people see the product.
 Deals compare against the 90-day median, so "raise the price, then announce a
 sale" does not count as a deal.
+
+## Live price checks
+
+Where the data comes from:
+
+1. **Live check when a link is pasted.** The server opens that product's
+   page once and reads price, title, image and MRP with the same extractor
+   the extension uses. At most 60 live checks per visitor per day.
+2. **Scheduled re-checks** (optional, `supabase/cron.sql`): every 30 minutes
+   up to 20 products, least recently checked first. After a failure the
+   next try waits longer (12h, 24h, ... up to 8 days); after 30 failures in
+   a row a product is dropped from the schedule.
+3. **Extension users** who turned on community history.
+
+The bot says who it is (`DaamDekhoBot` user agent, linking to `/bot`). When
+a shop refuses (403/429/503/captcha) it records that, skips the rest of
+that shop for the run, and backs off. It does **not** try to get around
+bot protection (no browser impersonation, proxies or captcha solving).
+
+What we saw from Vercel's Mumbai region (7 Nov 2026): Amazon.in served the
+product page and the price was read; Flipkart answered **429** (refused).
+Flipkart prices therefore come from extension users for now. Myntra was not
+tested with a real product yet.
+
+**Terms of use.** Amazon's and Flipkart's terms prohibit automated
+collection of their pages. Price-history sites commonly do it anyway, but
+it is a risk to weigh: a shop may block the bot or object. The clean
+long-term sources are the extension's community data and official APIs
+(Amazon's Creators API once your Associates account qualifies; product
+feeds from affiliate networks). To stop scheduled checks:
+`select cron.unschedule('price-refresh');`
 
 ## Security model (Supabase)
 
@@ -61,6 +94,7 @@ Both are this design on purpose; nothing else is flagged.
 | `SUPABASE_ANON_KEY` | Supabase publishable key (`sb_publishable_...`) or legacy anon key |
 | `WRITE_TOKEN` | Long random string, the same as `config.write_token` in the database (sensitive) |
 | `CLIENT_SALT` | Long random string (sensitive) |
+| `CRON_SECRET` | Long random string (sensitive); the same value goes in `supabase/cron.sql` |
 | `SITE_NAME` | `DaamDekho` |
 | `SITE_URL` | Optional. Defaults to the production domain Vercel reports |
 | `EXTENSION_URL` | Chrome Web Store link once published (shows the install buttons) |
@@ -143,6 +177,9 @@ src/lib/paths.js        /p/<store>/<id> parsing
 src/lib/shared.js       reuses the extension's stores/insights/affiliate/share modules
 src/pages/              HTML pages, CSS/JS assets
 supabase/migrations/    schema, security, functions
+supabase/cron.sql       optional schedule (pg_cron + pg_net) for re-checks
+src/lib/fetcher.js      server-side page fetch + extraction
+src/lib/refresh.js      live check of one product, scheduled batch
 scripts/dev.mjs         local server; scripts/demo-data.mjs sample data
 test/                   tests; pg-store.js = PGlite + the migration
 ```
