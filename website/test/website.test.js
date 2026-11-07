@@ -1,20 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import worker from '../src/index.js';
-import { createD1 } from './d1-shim.js';
-import { refreshAggregates } from '../src/lib/db.js';
+import { safeHandle } from '../src/app.js';
+import { createPgStore } from './pg-store.js';
 import { istDay, dayStart, DAY_MS } from '../src/lib/days.js';
-import { dailySeries, aggregates, lowerMedian } from '../src/lib/series.js';
 import { resolveProduct, extractUrl } from '../src/lib/links.js';
 import { identFromPath } from '../src/lib/paths.js';
-import { validatePoint, LIMITS } from '../src/lib/ingest.js';
+import { validatePoint, LIMITS, hashId } from '../src/lib/ingest.js';
+import { supabaseRpc } from '../src/lib/supabase.js';
 
 const FK_URL = 'https://www.flipkart.com/samsung-galaxy-m35/p/itm123abc?pid=MOBGZ12345';
 const AMZ_URL = 'https://www.amazon.in/dp/B0TEST1234';
 
-function makeEnv(extra = {}) {
+async function makeEnv(extra = {}) {
+  const { db, rpc, store } = await createPgStore();
   return {
-    DB: createD1(),
+    db,
+    rpc,
+    store,
     SITE_NAME: 'DaamDekho',
     SITE_URL: 'https://site.test',
     CLIENT_SALT: 'test-salt',
@@ -26,12 +28,13 @@ function makeEnv(extra = {}) {
   };
 }
 
-const get = (env, path, init) => worker.fetch(new Request(`https://site.test${path}`, init), env);
+const get = (env, path, init) => safeHandle(new Request(`https://site.test${path}`, init), env);
+const q = async (env, sql, params = []) => (await env.db.query(sql, params)).rows;
 
 function post(env, body, ip = '1.2.3.4') {
   return get(env, '/api/v1/prices', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `${ip}, 10.0.0.1` },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 }
@@ -52,39 +55,78 @@ async function seed(env, key, url, prices, { clients = ['a'], title = 'Seeded pr
   const now = Date.now();
   const store = key.split(':')[0];
   const pid = key.slice(store.length + 1);
-  await env.DB.prepare('INSERT INTO products (key, store, pid, url, title, image, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(key, store, pid, url, title, image, now - prices.length * DAY_MS, now)
-    .run();
+  await q(env, 'insert into products (key, store, pid, url, title, image, first_seen, last_seen) values ($1, $2, $3, $4, $5, $6, $7, $8)', [
+    key, store, pid, url, title, image, now - prices.length * DAY_MS, now,
+  ]);
   for (let i = 0; i < prices.length; i++) {
     const t = now - (prices.length - 1 - i) * DAY_MS;
     for (const c of clients) {
-      await env.DB.prepare('INSERT INTO observations (key, day, client, price, t) VALUES (?, ?, ?, ?, ?)').bind(key, istDay(t), c, prices[i], t).run();
+      await q(env, 'insert into observations (key, day, client, price, t) values ($1, $2, $3, $4, $5)', [key, istDay(t), c, prices[i], t]);
     }
   }
-  await refreshAggregates(env.DB, key, now);
+  await q(env, 'select refresh_product($1, $2)', [key, now]);
 }
 
-// ----------------------------------------------------------- pure helpers
+// ------------------------------------------------------ database and helpers
 
-test('days are bucketed in India time', () => {
-  // 20:00 UTC on 1 Jan is 01:30 IST on 2 Jan.
-  assert.equal(istDay(Date.UTC(2026, 0, 1, 20, 0)), '2026-01-02');
+test('daily price is the lower median across reporters, so one fake report cannot move it', async () => {
+  const env = await makeEnv();
+  const key = 'amazon:B0TEST1234';
+  const now = dayStart('2026-01-02') + 1000;
+  await q(env, 'insert into products (key, store, pid, url, first_seen, last_seen) values ($1, $2, $3, $4, $5, $5)', [key, 'amazon', 'B0TEST1234', AMZ_URL, now]);
+  for (const [day, client, price] of [['2026-01-01', 'a', 120], ['2026-01-02', 'a', 100], ['2026-01-02', 'b', 101], ['2026-01-02', 'liar', 1], ['2026-01-02', 'c', 99]]) {
+    await q(env, 'insert into observations (key, day, client, price, t) values ($1, $2, $3, $4, $5)', [key, day, client, price, dayStart(day)]);
+  }
+  assert.deepEqual(await env.store.getSeries(key, now), [[dayStart('2026-01-01'), 120], [dayStart('2026-01-02'), 99]]);
+  await q(env, 'select refresh_product($1, $2)', [key, now]);
+  const p = await env.store.getProduct(key);
+  assert.deepEqual(
+    { last: p.last_price, low: p.low_price, lowDay: p.low_day, high: p.high_price, typical: p.typical_price, days: p.days, reporters: p.reporters },
+    { last: 99, low: 99, lowDay: '2026-01-02', high: 120, typical: null, days: 2, reporters: 4 }
+  );
+  assert.equal(p.clicks, undefined, 'internal counters are not exposed');
+});
+
+test('days are bucketed in India time in both JS and Postgres', async () => {
+  const env = await makeEnv();
+  const t = Date.UTC(2026, 0, 1, 20, 0); // 01:30 IST on 2 Jan
+  assert.equal(istDay(t), '2026-01-02');
+  assert.equal((await q(env, 'select ist_day($1)::text as d', [t]))[0].d, '2026-01-02');
   assert.equal(dayStart('2026-01-02'), Date.UTC(2026, 0, 1, 18, 30));
 });
 
-test('daily series uses the lower median, so one fake report cannot move a price', () => {
-  assert.equal(lowerMedian([5, 1, 3]), 3);
-  assert.equal(lowerMedian([4, 1, 3, 2]), 2);
-  const series = dailySeries([
-    { day: '2026-01-02', price: 100 },
-    { day: '2026-01-01', price: 120 },
-    { day: '2026-01-02', price: 101 },
-    { day: '2026-01-02', price: 1 }, // liar
-    { day: '2026-01-02', price: 99 },
-  ]);
-  assert.deepEqual(series, [[dayStart('2026-01-01'), 120], [dayStart('2026-01-02'), 99]]);
-  const agg = aggregates(series, dayStart('2026-01-02') + 1000);
-  assert.deepEqual(agg, { last_price: 99, low_price: 99, low_day: '2026-01-02', high_price: 120, typical_price: null, days: 2 });
+test('the database refuses writes without the write token and hides tables', async () => {
+  const env = await makeEnv();
+  await assert.rejects(
+    env.rpc('ingest_prices', { p_token: 'wrong', p_client: 'c', p_ip: 'i', p_points: [], p_now: Date.now(), p_client_limit: 10, p_ip_limit: 10 }),
+    /invalid write token/
+  );
+  await assert.rejects(env.rpc('record_click', { p_token: null, p_key: 'x' }), /invalid write token/);
+  // The public API role cannot touch tables or internal functions directly.
+  await q(env, 'set role anon');
+  await assert.rejects(q(env, 'select * from config'), /permission denied/);
+  await assert.rejects(q(env, 'select * from observations'), /permission denied/);
+  await assert.rejects(q(env, "select refresh_product('x', 0)"), /permission denied/);
+  assert.deepEqual(await env.rpc('list_recent', { p_limit: 5 }), [], 'read functions work for anon');
+  await q(env, 'reset role');
+});
+
+test('supabaseRpc sends the right request and surfaces errors', async () => {
+  const calls = [];
+  const fake = async (url, init) => {
+    calls.push({ url, init });
+    return url.endsWith('/boom') ? new Response('{"message":"nope"}', { status: 403 }) : new Response('[{"a":1}]', { status: 200 });
+  };
+  const rpc = supabaseRpc('https://abc.supabase.co/', 'sb_publishable_xyz', fake);
+  assert.deepEqual(await rpc('list_recent', { p_limit: 3 }), [{ a: 1 }]);
+  assert.equal(calls[0].url, 'https://abc.supabase.co/rest/v1/rpc/list_recent');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.headers.apikey, 'sb_publishable_xyz');
+  assert.equal(calls[0].init.headers.authorization, undefined, 'publishable keys are not sent as a bearer token');
+  assert.equal(calls[0].init.body, '{"p_limit":3}');
+  assert.equal(supabaseRpc('https://abc.supabase.co', 'eyJlegacy', fake) && true, true);
+  await assert.rejects(rpc('boom', {}), /Supabase boom failed: HTTP 403/);
+  assert.throws(() => supabaseRpc('', 'k'), /SUPABASE_URL/);
 });
 
 test('identFromPath normalises ids like the extension does', () => {
@@ -140,54 +182,67 @@ test('extractUrl and short-link resolution', async () => {
 // ------------------------------------------------------------- ingest API
 
 test('POST /api/v1/prices stores reports and builds the product', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   const res = await post(env, { client: 'client-aaaa-1111', points: [point(), point({ key: 'amazon:B0TEST1234', url: AMZ_URL, price: 1299, title: 'boAt' }), point({ price: -1 })] });
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('access-control-allow-origin'), '*');
   assert.deepEqual(await res.json(), { accepted: 2, rejected: 1 });
 
-  const row = await env.DB.prepare('SELECT * FROM products WHERE key = ?').bind('flipkart:MOBGZ12345').first();
+  const row = await env.store.getProduct('flipkart:MOBGZ12345');
   assert.equal(row.url, FK_URL);
   assert.equal(row.last_price, 13999);
+  assert.equal(row.mrp, 24499);
   assert.equal(row.days, 1);
   assert.equal(row.reporters, 1);
-  const obs = await env.DB.prepare('SELECT client FROM observations LIMIT 1').first();
+  const [obs] = await q(env, 'select client from observations limit 1');
   assert.notEqual(obs.client, 'client-aaaa-1111', 'client ids are stored hashed');
   assert.equal(obs.client.length, 32);
 });
 
 test('later reports from the same user on the same day replace the earlier one; first title wins', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   const t = Date.now() - 120_000;
   await post(env, { client: 'client-aaaa-1111', points: [point({ t, price: 15000 })] });
   await post(env, { client: 'client-aaaa-1111', points: [point({ t: t + 60_000, price: 14000, title: 'Spam title' })] });
   await post(env, { client: 'client-aaaa-1111', points: [point({ t: t - 60_000, price: 99999 })] }); // older, ignored
-  const rows = (await env.DB.prepare('SELECT price FROM observations').all()).results;
+  const rows = await q(env, 'select price::float8 as price from observations');
   assert.deepEqual(rows, [{ price: 14000 }]);
-  const product = await env.DB.prepare('SELECT title, last_price FROM products').first();
-  assert.deepEqual(product, { title: 'SAMSUNG Galaxy M35 5G', last_price: 14000 });
+  const product = await env.store.getProduct('flipkart:MOBGZ12345');
+  assert.deepEqual({ title: product.title, last: product.last_price }, { title: 'SAMSUNG Galaxy M35 5G', last: 14000 });
+  // Several points for one product and day in a single upload are fine too.
+  const res = await post(env, { client: 'client-cccc-3333', points: [point({ t: t + 1000, price: 13500 }), point({ t: t + 2000, price: 13400 })] });
+  assert.deepEqual(await res.json(), { accepted: 2, rejected: 0 });
+  assert.equal((await q(env, "select count(*)::int as n from observations"))[0].n, 2);
 });
 
 test('ingest rejects malformed bodies and enforces daily limits', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   assert.equal((await post(env, 'not json')).status, 400);
   assert.equal((await post(env, { client: 'x', points: [point()] })).status, 400);
   assert.equal((await post(env, { client: 'client-aaaa-1111', points: [] })).status, 400);
   assert.equal((await post(env, { client: 'client-aaaa-1111', points: new Array(51).fill(point()) })).status, 400);
   assert.equal((await post(env, 'x'.repeat(LIMITS.maxBodyBytes + 1))).status, 413);
 
-  const full = makeEnv();
+  const full = await makeEnv();
   // Fill a client's quota, then one more point is refused.
-  const { hashId } = await import('../src/lib/ingest.js');
   const who = await hashId('test-salt', 'client:client-bbbb-2222');
-  await full.DB.prepare('INSERT INTO usage (who, day, points) VALUES (?, ?, ?)').bind(who, istDay(Date.now()), LIMITS.perClientPerDay).run();
+  await q(full, 'insert into usage (who, day, points) values ($1, $2, $3)', [who, istDay(Date.now()), LIMITS.perClientPerDay]);
   const limited = await post(full, { client: 'client-bbbb-2222', points: [point()] });
   assert.equal(limited.status, 429);
-  assert.equal((await full.DB.prepare('SELECT COUNT(*) AS n FROM observations').first()).n, 0);
+  assert.equal((await q(full, 'select count(*)::int as n from observations'))[0].n, 0);
+  // The IP limit applies across client ids.
+  const ipWho = await hashId('test-salt', 'ip:9.9.9.9');
+  await q(full, 'insert into usage (who, day, points) values ($1, $2, $3)', [ipWho, istDay(Date.now()), LIMITS.perIpPerDay]);
+  assert.equal((await post(full, { client: 'client-dddd-4444', points: [point()] }, '9.9.9.9')).status, 429);
+  assert.equal((await post(full, { client: 'client-dddd-4444', points: [point()] }, '8.8.8.8')).status, 200);
+  // Old counters are cleaned up on the way.
+  await q(full, "insert into usage (who, day, points) values ('old', '2020-01-01', 5)");
+  await post(full, { client: 'client-dddd-4444', points: [point()] }, '7.7.7.7');
+  assert.equal((await q(full, "select count(*)::int as n from usage where who = 'old'"))[0].n, 0);
 });
 
 test('CORS preflight for the extension', async () => {
-  const res = await get(makeEnv(), '/api/v1/prices', { method: 'OPTIONS' });
+  const res = await get(await makeEnv(), '/api/v1/prices', { method: 'OPTIONS' });
   assert.equal(res.status, 204);
   assert.equal(res.headers.get('access-control-allow-methods'), 'GET, POST, OPTIONS');
   assert.equal(res.headers.get('access-control-allow-headers'), 'content-type');
@@ -196,7 +251,7 @@ test('CORS preflight for the extension', async () => {
 // ------------------------------------------------------------ history API
 
 test('GET /api/v1/history returns the daily series', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   await seed(env, 'flipkart:MOBGZ12345', FK_URL, [15000, 15000, 14500, 13999], { clients: ['a', 'b'] });
   const res = await get(env, '/api/v1/history/flipkart/MOBGZ12345');
   assert.equal(res.status, 200);
@@ -211,13 +266,13 @@ test('GET /api/v1/history returns the daily series', async () => {
 // ------------------------------------------------------------------ pages
 
 test('product page: data, verdict, share, escaping, OG tags, affiliate disclosure', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   const prices = [17999, 17999, 17999, 17999, 17999, 17999, 16999, 15999, 13999];
   await seed(env, 'flipkart:MOBGZ12345', FK_URL, prices, {
     title: 'Phone <script>alert(1)</script> "quoted"',
     image: 'https://rukminim2.flixcart.com/image/phone.jpeg',
   });
-  await env.DB.prepare('UPDATE products SET mrp = 24499').run();
+  await q(env, 'update products set mrp = 24499');
   const res = await get(env, '/p/flipkart/MOBGZ12345');
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-security-policy'), /script-src 'self'/);
@@ -239,7 +294,7 @@ test('product page: data, verdict, share, escaping, OG tags, affiliate disclosur
 });
 
 test('product page flags a fake sale', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   // 40 days at 1000, raised to 1500 for two weeks, "sale" at 999.
   const prices = [...new Array(40).fill(1000), ...new Array(14).fill(1500), 999];
   await seed(env, 'amazon:B0TEST1234', AMZ_URL, prices, { title: 'Headphones' });
@@ -251,7 +306,7 @@ test('product page flags a fake sale', async () => {
 });
 
 test('unknown product page is a helpful 404, noindex', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   const res = await get(env, '/p/amazon/B0NOTHERE1');
   assert.equal(res.status, 404);
   const body = await res.text();
@@ -262,7 +317,7 @@ test('unknown product page is a helpful 404, noindex', async () => {
 });
 
 test('/go redirects: Amazon plain, Flipkart via the network template, clicks counted', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   await seed(env, 'flipkart:MOBGZ12345', FK_URL, [100, 90]);
   await seed(env, 'amazon:B0TEST1234', AMZ_URL, [100, 90]);
   const fk = await get(env, '/go/flipkart/MOBGZ12345', { redirect: 'manual' });
@@ -270,16 +325,16 @@ test('/go redirects: Amazon plain, Flipkart via the network template, clicks cou
   assert.equal(fk.headers.get('location'), 'https://net.example/r?id=7&u=' + encodeURIComponent(FK_URL));
   const amz = await get(env, '/go/amazon/B0TEST1234', { redirect: 'manual' });
   assert.equal(amz.headers.get('location'), AMZ_URL);
-  const plainEnv = makeEnv({ FLIPKART_TEMPLATE: '' });
+  const plainEnv = await makeEnv({ FLIPKART_TEMPLATE: '' });
   await seed(plainEnv, 'flipkart:MOBGZ12345', FK_URL, [100]);
   assert.equal((await get(plainEnv, '/go/flipkart/MOBGZ12345', { redirect: 'manual' })).headers.get('location'), FK_URL);
-  const clicks = await env.DB.prepare('SELECT clicks FROM products WHERE key = ?').bind('flipkart:MOBGZ12345').first('clicks');
+  const [{ clicks }] = await q(env, 'select clicks from products where key = $1', ['flipkart:MOBGZ12345']);
   assert.equal(clicks, 1);
   assert.equal((await get(env, '/go/flipkart/NOPE999999', { redirect: 'manual' })).status, 404);
 });
 
 test('/lookup redirects a pasted link to its page, or back home with a message', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   const ok = await get(env, `/lookup?u=${encodeURIComponent('Dekho yeh: ' + FK_URL + '&affid=abc')}`, { redirect: 'manual' });
   assert.equal(ok.headers.get('location'), '/p/flipkart/MOBGZ12345');
   const bad = await get(env, '/lookup?u=hello', { redirect: 'manual' });
@@ -290,7 +345,7 @@ test('/lookup redirects a pasted link to its page, or back home with a message',
 });
 
 test('home and deals list real drops only', async () => {
-  const env = makeEnv();
+  const env = await makeEnv();
   // Real drop: typical 1000, now 850.
   await seed(env, 'myntra:1234567', 'https://www.myntra.com/1234567', [1000, 1000, 1000, 1000, 1000, 1000, 850], { title: 'Real Deal Tee' });
   // Fake sale: typical 1000 (median), hiked then "discounted" back to 1000.
@@ -303,8 +358,8 @@ test('home and deals list real drops only', async () => {
   assert.doesNotMatch(deals, /Fake Sale Shorts/);
 });
 
-test('static routes, sitemap, robots, 404, cleanup job', async () => {
-  const env = makeEnv();
+test('static routes, sitemap, robots, 404', async () => {
+  const env = await makeEnv();
   await seed(env, 'amazon:B0TEST1234', AMZ_URL, [100, 90]);
   assert.match(await (await get(env, '/static/site.css')).text(), /--accent/);
   assert.equal((await get(env, '/favicon.svg')).headers.get('content-type'), 'image/svg+xml');
@@ -315,7 +370,17 @@ test('static routes, sitemap, robots, 404, cleanup job', async () => {
   assert.equal((await get(env, '/nope')).status, 404);
   assert.equal((await get(env, '/', { method: 'POST' })).status, 405);
 
-  await env.DB.prepare('INSERT INTO usage (who, day, points) VALUES (?, ?, ?), (?, ?, ?)').bind('old', '2020-01-01', 5, 'new', istDay(Date.now()), 5).run();
-  await worker.scheduled({}, env);
-  assert.deepEqual((await env.DB.prepare('SELECT who FROM usage').all()).results, [{ who: 'new' }]);
+});
+
+test('a missing or broken database gives a plain 500, not a crash', async () => {
+  const env = await makeEnv();
+  env.store = { ...env.store, deals: async () => { throw new Error('db down'); } };
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    const res = await get(env, '/');
+    assert.equal(res.status, 500);
+  } finally {
+    console.error = origError;
+  }
 });

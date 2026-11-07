@@ -1,0 +1,17 @@
+# Only api/, website/ and extension/src/shared are needed on Vercel.
+node_modules
+dist
+tests
+scripts
+assets
+docs
+website/test
+website/scripts
+website/node_modules
+extension/icons
+extension/_locales
+extension/src/background
+extension/src/content
+extension/src/offscreen
+extension/src/popup
+extension/src/options

@@ -1,9 +1,10 @@
-// Cloudflare Worker entry: routes, headers, and the daily cleanup job.
+// The whole website as one Web-standard handler: handle(request, env) -> Response.
+// env.store is the data layer (src/lib/store.js); the rest of env is config.
+// Runs on Vercel (api/index.mjs), the local dev server and in tests.
 import { identFromPath } from './lib/paths.js';
-import { getProduct, getSeries, deals, recentlyTracked, sitemapProducts, recordClick } from './lib/db.js';
 import { ingest } from './lib/ingest.js';
 import { outboundUrl, affiliateActive, resolveProduct } from './lib/links.js';
-import { istDay, DAY_MS } from './lib/days.js';
+import { istDay } from './lib/days.js';
 import { CSS, JS, FAVICON } from './pages/assets.js';
 import { homePage, dealsPage, productPage, disclosurePage, privacyPage, notFoundPage } from './pages/pages.js';
 
@@ -52,12 +53,12 @@ function asset(body, type, maxAge = 86400) {
   return new Response(body, { headers: { 'content-type': type, 'cache-control': `public, max-age=${maxAge}` } });
 }
 
-async function handle(request, env) {
+export async function handle(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const now = Date.now();
   const site = siteFor(env, url);
-  const db = env.DB;
+  const store = env.store;
 
   // ------------------------------------------------------------------ API
   if (path.startsWith('/api/')) {
@@ -69,9 +70,9 @@ async function handle(request, env) {
     const m = path.match(/^\/api\/v1\/history\/([a-z]+)\/([^/]+)$/);
     if (m && request.method === 'GET') {
       const ident = identFromPath(m[1], m[2]);
-      const product = ident && (await getProduct(db, ident.key));
+      const product = ident && (await store.getProduct(ident.key));
       if (!product) return withCors(json({ error: 'not found' }, 404, { 'cache-control': 'public, max-age=600' }));
-      const series = await getSeries(db, ident.key, now);
+      const series = await store.getSeries(ident.key, now);
       return withCors(
         json(
           { key: ident.key, title: product.title, series, reports: product.reporters, updatedAt: product.last_seen },
@@ -87,10 +88,10 @@ async function handle(request, env) {
 
   // ---------------------------------------------------------------- pages
   if (path === '/') {
-    const [d, r] = await Promise.all([deals(db, now, 12), recentlyTracked(db, 8)]);
+    const [d, r] = await Promise.all([store.deals(now, 12), store.recentlyTracked(8)]);
     return page(homePage(site, { deals: d, recent: r, error: url.searchParams.get('error'), q: url.searchParams.get('q') }));
   }
-  if (path === '/deals') return page(dealsPage(site, { deals: await deals(db, now, 60) }));
+  if (path === '/deals') return page(dealsPage(site, { deals: await store.deals(now, 60) }));
 
   if (path === '/lookup') {
     const q = (url.searchParams.get('u') || '').slice(0, 2000);
@@ -104,8 +105,8 @@ async function handle(request, env) {
   if (m) {
     const ident = identFromPath(m[1], m[2]);
     if (!ident) return page(notFoundPage(site), { status: 404 });
-    const product = await getProduct(db, ident.key);
-    const series = product ? await getSeries(db, ident.key, now) : [];
+    const product = await store.getProduct(ident.key);
+    const series = product ? await store.getSeries(ident.key, now) : [];
     const html = productPage(site, { ident, product, series, now, affiliate: product ? affiliateActive(ident.store, env) : false });
     return page(html, { status: product ? 200 : 404 });
   }
@@ -113,9 +114,9 @@ async function handle(request, env) {
   m = path.match(/^\/go\/([a-z]+)\/([^/]+)\/?$/);
   if (m) {
     const ident = identFromPath(m[1], m[2]);
-    const product = ident && (await getProduct(db, ident.key));
+    const product = ident && (await store.getProduct(ident.key));
     if (!product) return page(notFoundPage(site), { status: 404 });
-    await recordClick(db, ident.key);
+    await store.recordClick(ident.key);
     return redirect(outboundUrl(product, env).href, 302, { 'x-robots-tag': 'noindex' });
   }
 
@@ -128,7 +129,7 @@ async function handle(request, env) {
     return asset(`User-agent: *\nDisallow: /go/\nDisallow: /lookup\nDisallow: /api/\nSitemap: ${site.base}/sitemap.xml\n`, 'text/plain; charset=utf-8', 3600);
   }
   if (path === '/sitemap.xml') {
-    const rows = await sitemapProducts(db);
+    const rows = await store.sitemapProducts(5000);
     const urls = rows
       .map((r) => `<url><loc>${site.base}/p/${r.store}/${encodeURIComponent(r.pid)}</loc><lastmod>${istDay(r.last_seen)}</lastmod></url>`)
       .join('');
@@ -139,18 +140,12 @@ async function handle(request, env) {
   return page(notFoundPage(site), { status: 404 });
 }
 
-export default {
-  async fetch(request, env) {
-    try {
-      return await handle(request, env);
-    } catch (err) {
-      console.error(err && err.stack ? err.stack : err);
-      return new Response('Something went wrong', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
-    }
-  },
-
-  // Daily: drop rate-limit counters older than a week.
-  async scheduled(event, env) {
-    await env.DB.prepare('DELETE FROM usage WHERE day < ?').bind(istDay(Date.now() - 7 * DAY_MS)).run();
-  },
-};
+/** Wraps handle() so an unexpected error becomes a plain 500 page. */
+export async function safeHandle(request, env) {
+  try {
+    return await handle(request, env);
+  } catch (err) {
+    console.error(err && err.stack ? err.stack : err);
+    return new Response('Something went wrong', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  }
+}

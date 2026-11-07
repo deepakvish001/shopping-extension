@@ -5,12 +5,12 @@
 //  - every field validated; the canonical URL is rebuilt from the shop URL,
 //    never trusted from the client; images only from the shops' CDNs;
 //  - one stored price per product, per day, per reporter (latest wins), and
-//    pages show the daily median across reporters;
+//    pages show the daily median across reporters (Postgres function
+//    ingest_prices, supabase/migrations);
 //  - daily caps per reporter and per IP; ids and IPs are stored only as
 //    salted hashes.
 import { PTStores } from './shared.js';
 import { istDay } from './days.js';
-import { refreshAggregates } from './db.js';
 
 export const LIMITS = {
   maxBodyBytes: 64 * 1024,
@@ -45,6 +45,12 @@ function cleanImage(value) {
   } catch (_) {
     return null;
   }
+}
+
+/** Visitor IP as set by the hosting edge (Vercel sets x-real-ip / x-forwarded-for). */
+export function clientIp(request) {
+  const h = request.headers;
+  return h.get('x-real-ip') || (h.get('x-forwarded-for') || '').split(',')[0].trim() || h.get('cf-connecting-ip') || 'unknown';
 }
 
 /** @returns {{ok: true, point} | {ok: false, reason: string}} */
@@ -99,51 +105,17 @@ export async function ingest(env, request, now = Date.now()) {
   }
   if (!accepted.length) return { status: 200, body: { accepted: 0, rejected } };
 
-  const db = env.DB;
   const salt = env.CLIENT_SALT || 'dev-only-salt';
-  const today = istDay(now);
   const clientHash = await hashId(salt, `client:${client}`);
-  const ipHash = await hashId(salt, `ip:${request.headers.get('cf-connecting-ip') || 'unknown'}`);
-
-  const usage = await db.prepare('SELECT who, points FROM usage WHERE day = ? AND who IN (?, ?)').bind(today, clientHash, ipHash).all();
-  const used = Object.fromEntries(usage.results.map((r) => [r.who, r.points]));
-  if ((used[clientHash] || 0) + accepted.length > LIMITS.perClientPerDay || (used[ipHash] || 0) + accepted.length > LIMITS.perIpPerDay) {
-    return { status: 429, body: { error: 'daily limit reached' } };
-  }
-
-  const stmts = [];
-  for (const p of accepted) {
-    stmts.push(
-      db
-        .prepare(
-          `INSERT INTO products (key, store, pid, url, title, image, mrp, first_seen, last_seen)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(key) DO UPDATE SET
-             title = COALESCE(products.title, excluded.title),
-             image = COALESCE(products.image, excluded.image),
-             mrp = COALESCE(excluded.mrp, products.mrp),
-             first_seen = MIN(products.first_seen, excluded.first_seen),
-             last_seen = MAX(products.last_seen, excluded.last_seen)`
-        )
-        .bind(p.key, p.store, p.pid, p.url, p.title, p.image, p.mrp, p.t, p.t),
-      db
-        .prepare(
-          `INSERT INTO observations (key, day, client, price, t) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(key, day, client) DO UPDATE SET price = excluded.price, t = excluded.t
-           WHERE excluded.t >= observations.t`
-        )
-        .bind(p.key, istDay(p.t), clientHash, p.price, p.t)
-    );
-  }
-  for (const who of [clientHash, ipHash]) {
-    stmts.push(
-      db
-        .prepare('INSERT INTO usage (who, day, points) VALUES (?, ?, ?) ON CONFLICT(who, day) DO UPDATE SET points = usage.points + excluded.points')
-        .bind(who, today, accepted.length)
-    );
-  }
-  await db.batch(stmts);
-
-  for (const key of new Set(accepted.map((p) => p.key))) await refreshAggregates(db, key, now);
+  const ipHash = await hashId(salt, `ip:${clientIp(request)}`);
+  const result = await env.store.ingest({
+    clientHash,
+    ipHash,
+    points: accepted.map((p) => ({ ...p, day: istDay(p.t) })),
+    now,
+    clientLimit: LIMITS.perClientPerDay,
+    ipLimit: LIMITS.perIpPerDay,
+  });
+  if (result && result.error === 'rate_limited') return { status: 429, body: { error: 'daily limit reached' } };
   return { status: 200, body: { accepted: accepted.length, rejected } };
 }

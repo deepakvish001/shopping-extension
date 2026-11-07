@@ -7,12 +7,12 @@ Plan: Chrome extension → website → Telegram/WhatsApp. See [docs/ROADMAP.md](
 
 | Part | Folder | Status |
 |---|---|---|
-| Chrome extension | [`extension/`](extension/) | v0.2.0 |
-| Website + API (Cloudflare Workers + D1) | [`website/`](website/) | v0.1.0, ready to deploy ([guide](website/README.md)) |
+| Chrome extension | [`extension/`](extension/) | v0.2.1 |
+| Website + API (Vercel + Supabase) | [`website/`](website/) | live at https://daamdekho-three.vercel.app ([guide](website/README.md)) |
 | Telegram / WhatsApp | – | next |
 
 > Working name: **DaamDekho**, a placeholder. Change it in
-> `extension/_locales/en/messages.json` and `SITE_NAME` in `website/wrangler.toml`.
+> `extension/_locales/en/messages.json` and the `SITE_NAME` env var on Vercel.
 
 ## Extension
 
@@ -33,9 +33,9 @@ Plan: Chrome extension → website → Telegram/WhatsApp. See [docs/ROADMAP.md](
 - Popup with tracked products; options for language, alerts, community data,
   affiliate links (off by default, rule-bound), export/delete data.
 
-The website address goes in `extension/src/shared/config.js` (`SITE_URL`).
-Left empty, community history and website links are switched off and
-everything else works locally.
+The website address is in `extension/src/shared/config.js` (`SITE_URL`,
+now `https://daamdekho-three.vercel.app`). Left empty, community history and
+website links are switched off and everything else works locally.
 
 ### Try it in Chrome
 
@@ -47,7 +47,9 @@ everything else works locally.
 
 Product pages with shared history, honest deals list, paste-a-link lookup
 (app share links too), WhatsApp-friendly previews, affiliate "buy" links with
-disclosure. Deploy steps, costs and policy notes: [website/README.md](website/README.md).
+disclosure. Runs as one Vercel Function (Mumbai region) on a Supabase
+Postgres database. Setup, security model, costs and policy notes:
+[website/README.md](website/README.md).
 
 ## Development
 
@@ -60,14 +62,15 @@ npm test
 ```
 
 Runs the extension and website unit tests (Node's built-in runner; the
-website runs on an in-memory SQLite stand-in for D1).
+website tests run the real Supabase migration in PGlite, Postgres compiled to
+WebAssembly).
 
 ```bash
 npm run test:e2e
 ```
 
 Loads the extension in Chromium, serves sample pages on the real shop URLs
-and runs the real website Worker in-process, then checks the panel,
+and runs the real website handler in-process on PGlite, then checks the panel,
 tracking, background checks, notifications, popup, options, consent,
 uploads, shared history and share links. Needs Playwright
 (`npm i -D playwright && npx playwright install chromium`).
@@ -78,6 +81,12 @@ npm run pack
 
 Creates `dist/extension-v<version>.zip` for the Chrome Web Store.
 
+```bash
+npm run dev:website
+```
+
+Runs the website locally on http://localhost:3000 with demo data.
+
 ## Layout
 
 ```
@@ -85,7 +94,8 @@ extension/                 the extension (load this folder)
   src/shared/              plain JS, no chrome.* calls, also used by the website
     stores.js extract.js insights.js share.js affiliate.js settings.js config.js
   src/content/ src/background/ src/offscreen/ src/popup/ src/options/
-website/                   Cloudflare Worker + D1 (see website/README.md)
+api/index.mjs, vercel.json Vercel entry point and routing
+website/                   website code, Supabase migrations (see website/README.md)
 tests/                     extension unit tests, fixtures, e2e test
 scripts/                   pack.js, make-icons.js
 docs/                      roadmap, Chrome Web Store notes, privacy policy

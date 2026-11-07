@@ -88,7 +88,8 @@ alerts for Amazon.in, Flipkart and Myntra.
 > Privacy: your price history and tracked products are stored in your
 > browser. If you turn on Community price history (it asks first), the
 > product, price and time of products you view are shared anonymously with
-> [website] so everyone gets full price histories. Nothing else is sent.
+> daamdekho-three.vercel.app so everyone gets full price histories. Nothing
+> else is sent.
 >
 > Affiliate disclosure (include only when affiliate links are enabled): When
 > you open a Flipkart or Myntra deal from a price-drop alert or from the deal
