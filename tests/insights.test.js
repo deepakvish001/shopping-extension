@@ -22,10 +22,12 @@ test('recordPoint skips repeats within 12h, keeps changes, caps size', () => {
   assert.equal(big[0][0], T0 + 10 * HOUR);
 });
 
-test('stats uses a time-weighted average', () => {
+test('stats uses a time-weighted average and median', () => {
   // 100 for 9 days, then 50 for 1 day: time-weighted avg 95, plain avg would be 75.
   const s = I.stats([[T0, 100], [T0 + 9 * DAY, 50]], T0 + 10 * DAY);
   assert.equal(s.avg, 95);
+  assert.equal(s.median, 100, '100 held for 9 of 10 days');
+  assert.equal(I.stats([[T0, 5], [T0, 1], [T0, 3]], T0).median, 3, 'no durations: plain median');
   assert.equal(s.min, 50);
   assert.equal(s.max, 100);
   assert.equal(s.current, 50);
@@ -41,7 +43,7 @@ test('verdict levels', () => {
   assert.equal(I.verdict(I.stats([[T0, 95], [T0 + DAY, 100], [T0 + 9 * DAY, 98]], now), 'en').level, 'normal');
   const high = I.verdict(I.stats([[T0, 100], [T0 + 9 * DAY, 120]], now), 'en');
   assert.equal(high.level, 'high');
-  assert.match(high.text, /above average/);
+  assert.match(high.text, /above its typical price/);
   const good = I.verdict(I.stats([[T0, 80], [T0 + DAY, 100], [T0 + 9 * DAY, 90]], T0 + 9 * DAY + HOUR), 'hi');
   assert.equal(good.level, 'good');
   assert.match(good.text, /sasta/);
@@ -107,4 +109,52 @@ test('formatINR uses Indian digit grouping', () => {
   assert.equal(I.formatINR(123456), '₹1,23,456');
   assert.equal(I.formatINR(54999.5), '₹54,999.5');
   assert.equal(I.formatINR(null), '—');
+});
+
+test('windowAvg is time weighted and needs coverage', () => {
+  const h = [[T0, 100], [T0 + 5 * DAY, 200]];
+  assert.equal(I.windowAvg(h, T0, T0 + 10 * DAY), 150);
+  assert.equal(I.windowAvg(h, T0 + 4 * DAY, T0 + 6 * DAY), null, 'only 2 days covered');
+  assert.equal(I.windowAvg(h, T0 - 30 * DAY, T0 + 4 * DAY), 100, 'time before the first point does not count');
+});
+
+test('saleHike catches "raise the price, then call it a sale"', () => {
+  const now = T0 + 60 * DAY;
+  // 1000 for 45 days, raised to 1500 two weeks ago, "sale" at 999 now.
+  const fake = [[T0, 1000], [now - 14 * DAY, 1500], [now - DAY, 999]];
+  const r = I.saleHike(fake, now, 'hi');
+  assert.deepEqual([r.baseline, r.peak, r.current], [1000, 1500, 999]);
+  assert.match(r.text, /₹1,500/);
+  assert.match(I.saleHike(fake, now, 'en').text, /fake sale/);
+
+  // A real drop below the old level is not flagged.
+  assert.equal(I.saleHike([[T0, 1000], [now - 14 * DAY, 1500], [now - DAY, 850]], now, 'en'), null);
+  // No hike: steady price then a drop.
+  assert.equal(I.saleHike([[T0, 1000], [now - 10 * DAY, 1020], [now - DAY, 990]], now, 'en'), null);
+  // Still at the peak: nothing presented as a sale yet.
+  assert.equal(I.saleHike([[T0, 1000], [now - 14 * DAY, 1500], [now - DAY, 1500]], now, 'en'), null);
+  // Not enough history.
+  assert.equal(I.saleHike([[now - 5 * DAY, 1000], [now - 3 * DAY, 1500], [now - DAY, 999]], now, 'en'), null);
+});
+
+test('mergeHistory: community for the long view, local for recent detail', () => {
+  const community = [[T0 + 2 * DAY, 120], [T0, 100], [T0 + 9 * DAY, 90]];
+  const local = [[T0 + 9 * DAY + HOUR, 95], [T0 + 9 * DAY + 5 * HOUR, 92]];
+  assert.deepEqual(I.mergeHistory(local, community), [[T0, 100], [T0 + 2 * DAY, 120], [T0 + 9 * DAY, 90], ...local]);
+  assert.deepEqual(I.mergeHistory(local, []), local);
+  assert.deepEqual(I.mergeHistory([], community), [[T0, 100], [T0 + 2 * DAY, 120], [T0 + 9 * DAY, 90]]);
+  assert.deepEqual(I.mergeHistory(local, [['x', 1], [T0, -5]]), local, 'ignores bad points');
+});
+
+test('a "sale" back to the usual price after a hike is not called a deal', () => {
+  const now = T0 + 60 * DAY;
+  // 1499 for 45 days, hiked to 2199 for 14 days, back to 1499 today.
+  const h = [[T0, 1499], [T0 + 45 * DAY, 2199], [now - HOUR, 1499]];
+  const s = I.stats(h, now);
+  assert.equal(s.min, 1499);
+  assert.ok(s.avg > 1600, 'the hike inflates the average');
+  assert.equal(s.median, 1499);
+  const v = I.verdict(s, 'hi');
+  assert.equal(v.level, 'normal', 'not "lowest" or "good"');
+  assert.ok(I.saleHike(h, now, 'hi'), 'and the fake sale is flagged');
 });

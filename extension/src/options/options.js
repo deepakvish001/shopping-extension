@@ -15,6 +15,12 @@
     field('notifications').checked = s.notifications;
     field('checkIntervalHours').value = String(s.checkIntervalHours);
     field('dropThresholdPct').value = String(s.dropThresholdPct);
+    field('community').checked = s.community === true;
+    if (!PTConfig.isConfigured()) {
+      field('community').disabled = true;
+      document.getElementById('community-hint').textContent =
+        'Not available yet: the website address is not set in this build (extension/src/shared/config.js).';
+    }
     field('affiliateEnabled').checked = s.affiliate.enabled;
     field('tplFlipkart').value = s.affiliate.templates.flipkart;
     field('tplMyntra').value = s.affiliate.templates.myntra;
@@ -30,8 +36,12 @@
       }
     }
     const { settings: current } = await chrome.storage.local.get('settings');
+    const prev = PTSettings.normalize(current);
+    // Unchecked and never answered stays "not asked", so the panel can still ask.
+    const community = field('community').checked ? true : prev.community === null ? null : false;
     const next = PTSettings.normalize({
-      ...PTSettings.normalize(current),
+      ...prev,
+      community,
       lang: field('lang').value,
       showPanel: field('showPanel').checked,
       notifications: field('notifications').checked,

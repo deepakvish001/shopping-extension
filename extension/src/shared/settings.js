@@ -15,6 +15,8 @@
     notifications: true,
     showPanel: true,
     panelMinimized: false,
+    // Community price history: null = not asked yet, true/false = user's answer.
+    community: null,
     affiliate: { enabled: false, templates: { flipkart: '', myntra: '' } },
   });
 
@@ -37,6 +39,7 @@
       notifications: s.notifications !== false,
       showPanel: s.showPanel !== false,
       panelMinimized: s.panelMinimized === true,
+      community: s.community === true ? true : s.community === false ? false : null,
       affiliate: {
         enabled: aff.enabled === true,
         templates: {

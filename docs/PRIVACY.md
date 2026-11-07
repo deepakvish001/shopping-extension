@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 7 November 2026_
+_Last updated: 7 November 2026 (community price history added)_
 
 This policy covers the browser extension published from this repository
 (working name "DaamDekho").
@@ -18,8 +18,24 @@ your account details, addresses, payment details or orders.
 - Products you choose to track, with any target price you set.
 - Your settings.
 
-All of this is stored **only in your browser** (`chrome.storage.local`). It is
-not sent to the developer or to any third party.
+All of this is stored in your browser (`chrome.storage.local`).
+
+## Community price history (only if you turn it on)
+
+The extension asks before sharing anything. Only if you choose "Yes" (or
+switch it on in Options), it sends, for shop product pages you view: the
+product id and page address, title, image address, price, MRP and time, with
+a random id created for this purpose. It also downloads the shared history of
+the product you are viewing, which tells the website which product that is.
+
+On the website the random id and your IP address are stored only as salted
+hashes (the IP only in a daily counter used against abuse). Your name,
+account, orders and other browsing are never sent. The data is used only to
+show price history to everyone, and is not sold.
+
+Switching it off stops sharing and deletes the random id, the upload queue
+and the downloaded history from your browser. Reports already sent stay in
+the shared history without anything that identifies you.
 
 ## Network requests
 

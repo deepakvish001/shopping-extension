@@ -2,6 +2,9 @@
  * End-to-end check: loads the unpacked extension in Chromium and serves the
  * HTML fixtures on the real shop URLs (no network needed), then checks the
  * panel, tracking, popup, background re-check, alerts and outbound links.
+ * A copy of the extension is pointed at https://site.test, which is served by
+ * the real website Worker running in-process on an in-memory database, to
+ * check community history end to end (consent, upload, shared history, share).
  *
  * Needs Playwright + Chromium:  npm i -D playwright && npx playwright install chromium
  * Run:                          npm run test:e2e
@@ -13,7 +16,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const EXT = path.resolve(__dirname, '..', '..', 'extension');
+const SRC_EXT = path.resolve(__dirname, '..', '..', 'extension');
+const SITE = 'https://site.test';
 const fixture = (name) => fs.readFileSync(path.join(__dirname, '..', 'fixtures', name), 'utf8');
 const shots = process.env.SCREENSHOT_DIR;
 
@@ -27,7 +31,37 @@ async function step(name, fn) {
   console.log('ok');
 }
 
+/** Copy of the extension with the website address filled in. */
+function extensionCopy() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-ext-'));
+  fs.cpSync(SRC_EXT, dir, { recursive: true });
+  const cfg = path.join(dir, 'src', 'shared', 'config.js');
+  const src = fs.readFileSync(cfg, 'utf8');
+  assert.ok(src.includes("const SITE_URL = '';"));
+  fs.writeFileSync(cfg, src.replace("const SITE_URL = '';", `const SITE_URL = '${SITE}';`));
+  return dir;
+}
+
+/** The real website Worker on an in-memory D1, answering Playwright routes. */
+async function startSite() {
+  const { pathToFileURL } = require('url');
+  const web = path.resolve(__dirname, '..', '..', 'website');
+  const { default: worker } = await import(pathToFileURL(path.join(web, 'src', 'index.js')).href);
+  const { createD1 } = await import(pathToFileURL(path.join(web, 'test', 'd1-shim.js')).href);
+  const db = await import(pathToFileURL(path.join(web, 'src', 'lib', 'db.js')).href);
+  const env = { DB: createD1(), SITE_NAME: 'DaamDekho', SITE_URL: SITE, CLIENT_SALT: 'e2e' };
+  const handler = async (route) => {
+    const req = route.request();
+    const method = req.method();
+    const res = await worker.fetch(new Request(req.url(), { method, headers: req.headers(), body: ['GET', 'HEAD'].includes(method) ? undefined : req.postData() }), env);
+    await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
+  };
+  return { env, handler, refreshAggregates: db.refreshAggregates };
+}
+
 (async () => {
+  const EXT = extensionCopy();
+  const site = await startSite();
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-e2e-'));
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: 'chromium',
@@ -44,6 +78,7 @@ async function step(name, fn) {
   await context.route('https://www.amazon.in/**', serve('amazon'));
   await context.route('https://www.flipkart.com/**', serve('flipkart'));
   await context.route('https://www.myntra.com/**', serve('myntra'));
+  await context.route(`${SITE}/**`, site.handler);
 
   let failed = false;
   try {
@@ -179,6 +214,68 @@ async function step(name, fn) {
       await panel.getByRole('button', { name: 'Track price' }).waitFor({ timeout: 15000 });
     });
 
+    await step('community: consent, upload, shared history, website share link', async () => {
+      // Three other users reported this product at 1,999 for the last 30 days.
+      const DAY = 864e5;
+      const now = Date.now();
+      const key = 'amazon:B0TEST1234';
+      await site.env.DB.prepare('INSERT INTO products (key, store, pid, url, title, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(key, 'amazon', 'B0TEST1234', 'https://www.amazon.in/dp/B0TEST1234', 'boAt Rockerz 450', now - 30 * DAY, now)
+        .run();
+      for (let d = 30; d >= 1; d--) {
+        const t = now - d * DAY;
+        const day = new Date(t + 330 * 60e3).toISOString().slice(0, 10);
+        for (const c of ['u1', 'u2', 'u3']) {
+          await site.env.DB.prepare('INSERT INTO observations (key, day, client, price, t) VALUES (?, ?, ?, ?, ?)').bind(key, day, c, 1999, t).run();
+        }
+      }
+      await site.refreshAggregates(site.env.DB, key, now);
+
+      await page.goto(AMAZON_URL);
+      const consent = panel.locator('.consent');
+      await consent.waitFor({ timeout: 15000 });
+      assert.match(await consent.innerText(), /site\.test/, 'the prompt names where data goes');
+      assert.equal(await storage('clientId'), undefined, 'nothing is shared before consent');
+      await consent.getByRole('button', { name: 'Yes, turn on' }).click();
+
+      // Shared history arrives and is merged into the chart and stats.
+      await panel.getByText('Community data: 3 users').waitFor({ timeout: 15000 });
+      assert.match(await panel.innerText(), /Data since\s+30 days ago/);
+      assert.equal(await panel.locator('.consent').count(), 0);
+      assert.ok(await storage('c:amazon:B0TEST1234'), 'community history cached');
+
+      // Our own observations are uploaded (debounced by a few seconds).
+      let ours = 0;
+      for (let i = 0; i < 40 && !ours; i++) {
+        await page.waitForTimeout(500);
+        ours = (await site.env.DB.prepare("SELECT COUNT(*) AS n FROM observations WHERE key = ? AND client NOT IN ('u1','u2','u3')").bind(key).first()).n;
+      }
+      assert.equal(ours, 1, 'one row per user per day');
+      assert.deepEqual(await storage('uploadQueue'), [], 'queue drained');
+      assert.equal((await site.env.DB.prepare('SELECT reporters FROM products WHERE key = ?').bind(key).first()).reporters, 4);
+
+      // Share links point to the website page.
+      const wa = await panel.locator('a.chip.wa').getAttribute('href');
+      assert.match(decodeURIComponent(wa), /https:\/\/site\.test\/p\/amazon\/B0TEST1234\?ref=ext/);
+      if (shots) await page.locator('#pt-price-panel-host').screenshot({ path: path.join(shots, 'panel-community.png') });
+    });
+
+    await step('community: turning it off in options deletes the id, queue and cache', async () => {
+      const opt = await context.newPage();
+      await opt.goto(`chrome-extension://${extId}/src/options/options.html`);
+      await opt.locator('input[name="community"]').uncheck();
+      await opt.getByRole('button', { name: 'Save' }).click();
+      await opt.getByText('Saved.').waitFor();
+      let left = ['x'];
+      for (let i = 0; i < 20 && left.length; i++) {
+        await opt.waitForTimeout(250);
+        left = await sw.evaluate(() => chrome.storage.local.get(null).then((a) => Object.keys(a).filter((k) => k === 'clientId' || k === 'uploadQueue' || k.startsWith('c:'))));
+      }
+      assert.deepEqual(left, []);
+      assert.equal((await storage('settings')).community, false);
+      await opt.close();
+    });
+
     console.log('\nAll e2e checks passed.');
   } catch (err) {
     failed = true;
@@ -187,6 +284,7 @@ async function step(name, fn) {
   } finally {
     await context.close();
     fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(EXT, { recursive: true, force: true });
   }
   process.exit(failed ? 1 : 0);
 })();

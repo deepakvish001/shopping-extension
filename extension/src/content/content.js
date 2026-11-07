@@ -18,7 +18,7 @@
     hi: {
       lowest: 'Sabse kam',
       highest: 'Sabse zyada',
-      average: 'Average',
+      typical: 'Typical daam',
       since: 'Data shuru',
       track: 'Price track karo',
       targetPlaceholder: 'Target daam (optional)',
@@ -35,11 +35,20 @@
       close: 'Is page par chhupao',
       expand: 'Price history kholo',
       error: 'Kuch gadbad hui, dobara try karo.',
+      share: 'Share karo:',
+      copy: 'Copy',
+      copied: 'Copy ho gaya!',
+      communityTitle: 'Sabke daam se poori history dekhni hai?',
+      communityBody: (host) =>
+        `Doosre users ke dekhe hue daam se har product ki purani history turant dikhegi. Iske badle aap jo products dekhte ho, unka sirf product, daam aur samay bina naam ke ${host} ko bheja jayega. Aapka naam, account ya baaki browsing nahi. Settings me kabhi bhi band kar sakte ho.`,
+      communityYes: 'Haan, chalu karo',
+      communityNo: 'Abhi nahi',
+      communityNote: (n) => `Community data: ${n} users`,
     },
     en: {
       lowest: 'Lowest',
       highest: 'Highest',
-      average: 'Average',
+      typical: 'Typical',
       since: 'Data since',
       track: 'Track price',
       targetPlaceholder: 'Target price (optional)',
@@ -56,12 +65,21 @@
       close: 'Hide on this page',
       expand: 'Open price history',
       error: 'Something went wrong, try again.',
+      share: 'Share:',
+      copy: 'Copy',
+      copied: 'Copied!',
+      communityTitle: 'See full history from everyone’s prices?',
+      communityBody: (host) =>
+        `Prices seen by other users give every product its past history instantly. In return, for products you view, only the product, price and time are sent anonymously to ${host}. Not your name, account or other browsing. Turn it off any time in Settings.`,
+      communityYes: 'Yes, turn on',
+      communityNo: 'Not now',
+      communityNote: (n) => `Community data: ${n} users`,
     },
   };
 
   const LEVEL_COLORS = { lowest: '#0b8043', good: '#0b8043', normal: '#b06000', high: '#c5221f', new: '#5f6368' };
 
-  const state = { url: null, run: 0, key: null, product: null, settings: null, readFailed: false, hidden: false };
+  const state = { url: null, run: 0, key: null, product: null, settings: null, community: null, readFailed: false, hidden: false };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -86,7 +104,10 @@
       removePanel();
       return;
     }
-    if (state.key !== ident.key) state.hidden = false;
+    if (state.key !== ident.key) {
+      state.hidden = false;
+      state.community = null;
+    }
     state.key = ident.key;
 
     let product = null;
@@ -104,6 +125,17 @@
     state.settings = res.settings;
     state.readFailed = !(product && product.price);
     render();
+    loadCommunity(myRun);
+  }
+
+  /** Fetch shared history (only when the user opted in) and redraw with it. */
+  async function loadCommunity(myRun) {
+    const settings = state.settings || {};
+    if (settings.community !== true || !PTConfig.isConfigured() || !state.key || !state.product) return;
+    const res = await send({ type: 'getCommunity', key: state.key });
+    if (myRun !== state.run || !res || !res.community) return;
+    state.community = res.community;
+    render();
   }
 
   // Shops navigate inside the page (Myntra) or swap variants (Amazon):
@@ -120,7 +152,11 @@
       changed = true;
     }
     if (changes.settings) {
+      const wasOn = state.settings && state.settings.community === true;
       state.settings = changes.settings.newValue || state.settings;
+      const isOn = state.settings && state.settings.community === true;
+      if (!isOn) state.community = null;
+      if (isOn && !wasOn) loadCommunity(state.run);
       changed = true;
     }
     if (changed) render();
@@ -168,7 +204,9 @@
     const L = LABELS[lang];
     const rec = state.product;
     const now = Date.now();
-    const s = rec ? PTInsights.stats(rec.history, now) : null;
+    const community = settings.community === true ? state.community : null;
+    const history = rec ? PTInsights.mergeHistory(rec.history, community && community.series) : [];
+    const s = rec ? PTInsights.stats(history, now) : null;
     const v = PTInsights.verdict(s, lang);
     const color = LEVEL_COLORS[v.level] || LEVEL_COLORS.new;
     const root = getRoot();
@@ -216,12 +254,14 @@
       }
       card.append(priceRow);
       card.append(el('p', { class: 'verdict', style: `color:${color};border-color:${color}`, text: v.text }));
-      if (dc && dc.inflated && dc.text) card.append(el('p', { class: 'warn', text: dc.text }));
+      const hike = PTInsights.saleHike(history, now, lang);
+      const warning = hike ? hike.text : dc && dc.inflated ? dc.text : null;
+      if (warning) card.append(el('p', { class: 'warn', text: warning }));
       if (rec.inStock === false) card.append(el('p', { class: 'warn', text: L.outOfStock }));
 
       if (s.count >= 2) {
         const chart = el('div', { class: 'chart' });
-        chart.innerHTML = PTInsights.chartSvg(rec.history, { width: 268, height: 80, now, color }); // numbers only
+        chart.innerHTML = PTInsights.chartSvg(history, { width: 268, height: 80, now, color }); // numbers only
         card.append(chart);
       }
 
@@ -231,16 +271,75 @@
           { class: 'stats' },
           stat(L.lowest, PTInsights.formatINR(s.min), PTInsights.daysAgoText(s.minAt, now, lang)),
           stat(L.highest, PTInsights.formatINR(s.max), PTInsights.daysAgoText(s.maxAt, now, lang)),
-          stat(L.average, PTInsights.formatINR(s.avg), L.seen(s.count)),
+          stat(L.typical, PTInsights.formatINR(s.median), L.seen(s.count)),
           stat(L.since, PTInsights.daysAgoText(s.firstSeen, now, lang), '')
         )
       );
+      card.append(shareRow(rec, s, v, warning, L, lang));
     }
 
     if (state.readFailed) card.append(el('p', { class: 'warn', text: L.readFailed }));
     if (rec && s) card.append(trackSection(rec, settings, L));
-    card.append(el('p', { class: 'foot', text: L.localOnly }));
+    if (rec && s && settings.community === null && PTConfig.isConfigured()) card.append(consentSection(L));
+    // "Saved only in your browser" is true only while community sharing is off.
+    let footText = L.localOnly;
+    if (settings.community === true) footText = community && community.reports > 0 ? L.communityNote(community.reports) : '';
+    if (footText) card.append(el('p', { class: 'foot', text: footText }));
     root.append(card);
+  }
+
+  /** WhatsApp / Telegram / copy. Links to the website page when one is configured. */
+  function shareRow(rec, s, v, warning, L, lang) {
+    const link = PTConfig.isConfigured() ? `${PTConfig.productPageUrl(rec.store, rec.id)}?ref=ext` : rec.url;
+    const base = { title: rec.title, store: rec.store, stats: s, verdictText: v.text, warning, lang };
+    const text = PTShare.buildText({ ...base, link });
+    const copyBtn = el('button', {
+      class: 'chip',
+      type: 'button',
+      text: L.copy,
+      onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          copyBtn.textContent = L.copied;
+        } catch (_) {
+          window.prompt(L.copy, link);
+        }
+      },
+    });
+    return el(
+      'div',
+      { class: 'share' },
+      el('span', { text: L.share }),
+      el('a', { class: 'chip wa', href: PTShare.whatsappUrl(text), target: '_blank', rel: 'noopener noreferrer', text: 'WhatsApp' }),
+      el('a', { class: 'chip tg', href: PTShare.telegramUrl(PTShare.buildText({ ...base, link: null }), link), target: '_blank', rel: 'noopener noreferrer', text: 'Telegram' }),
+      copyBtn
+    );
+  }
+
+  /** Asks once before any data leaves the browser (Chrome Web Store user data policy). */
+  function consentSection(L) {
+    const choose = async (enabled) => {
+      const settings = { ...(state.settings || {}), community: enabled };
+      state.settings = settings;
+      render();
+      const res = await send({ type: 'saveSettings', settings });
+      if (res && res.settings) state.settings = res.settings;
+      // state.settings already said "on" before the storage event arrived, so
+      // the onChanged handler cannot see the switch: load the history here.
+      if (enabled) loadCommunity(state.run);
+    };
+    return el(
+      'div',
+      { class: 'consent' },
+      el('strong', { text: L.communityTitle }),
+      el('p', { text: L.communityBody(PTConfig.siteHost()) }),
+      el(
+        'div',
+        { class: 'row' },
+        el('button', { class: 'primary', type: 'button', text: L.communityYes, onclick: () => choose(true) }),
+        el('button', { class: 'link', type: 'button', text: L.communityNo, onclick: () => choose(false) })
+      )
+    );
   }
 
   function stat(label, value, sub) {
@@ -323,6 +422,15 @@
     .pill { display: flex; align-items: center; gap: 6px; background: #fff; color: #202124; border: 1px solid #dadce0;
             border-radius: 999px; padding: 8px 12px; box-shadow: 0 4px 14px rgba(0,0,0,.18); font-weight: 700; font-size: 13px; }
     .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .share { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; color: #5f6368; font-size: 12px; }
+    .chip { display: inline-block; border: 1px solid #dadce0; background: #fff; color: #202124; border-radius: 999px; padding: 4px 10px;
+            font-size: 12px; font-weight: 600; text-decoration: none; cursor: pointer; }
+    .chip:hover { background: #f1f3f4; }
+    .chip.wa { border-color: #25d366; color: #128c4b; }
+    .chip.tg { border-color: #2aabee; color: #1c7cb5; }
+    .consent { margin: 10px 0 4px; padding: 10px; border: 1px solid #c6dafc; background: #e8f0fe; border-radius: 8px; }
+    .consent p { margin: 6px 0 8px; color: #3c4043; font-size: 12px; }
+    .consent .row { display: flex; gap: 10px; align-items: center; }
   `;
 
   run();

@@ -21,25 +21,29 @@
     hi: {
       new: 'Abhi data kam hai. Track karo, hum daam par nazar rakhenge.',
       lowest: 'Ab tak ka sabse kam daam!',
-      good: (pct) => `Achha deal: average se ${pct}% sasta.`,
-      high: (pct) => `Ruko: average se ${pct}% mehenga.`,
+      good: (pct) => `Achha deal: typical daam se ${pct}% sasta.`,
+      high: (pct) => `Ruko: typical daam se ${pct}% mehenga.`,
       normal: 'Normal daam, koi khaas deal nahi.',
       inflated: (claimed, real) =>
         `MRP par ${claimed}% off dikh raha hai, lekin pichhle daam ke mukable asli bachat sirf ${real}% hai.`,
-      inflatedNegative: (claimed) => `MRP par ${claimed}% off dikh raha hai, lekin yeh daam average se upar hai.`,
+      inflatedNegative: (claimed) => `MRP par ${claimed}% off dikh raha hai, lekin yeh daam typical daam se upar hai.`,
       alertTarget: (price, target) => `Daam ${price} ho gaya, aapke target ${target} se kam.`,
       alertDrop: (price, pct) => `Daam ${pct}% gira: ab ${price}.`,
+      saleHike: (base, peak, cur) =>
+        `Sale ka khel? Pehle daam lagbhag ${base} tha, phir badha kar ${peak} kiya gaya. Ab ${cur} "discount" me hai, jo pehle wale daam se sasta nahi.`,
     },
     en: {
       new: 'Not enough data yet. Track it and we will watch the price.',
       lowest: 'Lowest price seen so far!',
-      good: (pct) => `Good deal: ${pct}% below average.`,
-      high: (pct) => `Wait: ${pct}% above average.`,
+      good: (pct) => `Good deal: ${pct}% below its typical price.`,
+      high: (pct) => `Wait: ${pct}% above its typical price.`,
       normal: 'Usual price, nothing special.',
       inflated: (claimed, real) => `Shows ${claimed}% off MRP, but the real saving versus past prices is only ${real}%.`,
-      inflatedNegative: (claimed) => `Shows ${claimed}% off MRP, but this price is above its average.`,
+      inflatedNegative: (claimed) => `Shows ${claimed}% off MRP, but this price is above its typical price.`,
       alertTarget: (price, target) => `Price is now ${price}, below your target of ${target}.`,
       alertDrop: (price, pct) => `Price dropped ${pct}%: now ${price}.`,
+      saleHike: (base, peak, cur) =>
+        `Possible fake sale: the price was about ${base}, was raised to ${peak}, and is now ${cur} as a "discount", which is no cheaper than before.`,
     },
   };
 
@@ -73,9 +77,13 @@
   }
 
   /**
-   * Summary statistics. The average is time weighted: each price counts for as
-   * long as it was the price (the last one until `now`), so checking a page
-   * many times in one hour does not skew it.
+   * Summary statistics. Average and median are time weighted: each price
+   * counts for as long as it was the price (the last one until `now`), so
+   * checking a page many times in one hour does not skew them.
+   *
+   * `median` is the "typical" price that verdicts compare against. Unlike the
+   * average, a short pre-sale price hike cannot pull it up, so a "sale" back
+   * to the usual price is not mistaken for a deal.
    */
   function stats(history, now) {
     const h = Array.isArray(history) ? history.filter((p) => Number.isFinite(p[1]) && p[1] > 0) : [];
@@ -88,6 +96,7 @@
     let weighted = 0;
     let duration = 0;
     let sum = 0;
+    const segments = [];
     for (let i = 0; i < h.length; i++) {
       const [t, p] = h[i];
       if (p < min || (p === min && t > minAt)) {
@@ -103,6 +112,7 @@
       weighted += p * span;
       duration += span;
       sum += p;
+      segments.push([p, span]);
     }
     const avg = duration > 0 ? weighted / duration : sum / h.length;
     return {
@@ -113,10 +123,23 @@
       minAt,
       maxAt,
       avg: Math.round(avg * 100) / 100,
+      median: weightedMedian(segments, duration),
       firstSeen: h[0][0],
       lastSeen: h[h.length - 1][0],
       spanDays: (end - h[0][0]) / DAY,
     };
+  }
+
+  /** Price held for at least half of the time (lower median); plain median without durations. */
+  function weightedMedian(segments, total) {
+    const sorted = segments.slice().sort((a, b) => a[0] - b[0]);
+    if (total <= 0) return sorted[Math.floor((sorted.length - 1) / 2)][0];
+    let acc = 0;
+    for (const [price, span] of sorted) {
+      acc += span;
+      if (acc >= total / 2) return price;
+    }
+    return sorted[sorted.length - 1][0];
   }
 
   function hasEnoughData(s) {
@@ -124,34 +147,104 @@
   }
 
   /**
-   * Should the user buy now? Compares the current price with its own history.
-   * @returns {{level: 'new'|'lowest'|'good'|'normal'|'high', text: string, pctVsAvg: number|null}}
+   * Should the user buy now? Compares the current price with its typical
+   * (median) price. "Lowest" also needs the price to be really below typical:
+   * a price that is merely back at its usual level after a hike is "normal".
+   * @returns {{level: 'new'|'lowest'|'good'|'normal'|'high', text: string, pctVsTypical: number|null}}
    */
   function verdict(s, lang) {
     const m = msg(lang);
-    if (!hasEnoughData(s)) return { level: 'new', text: m.new, pctVsAvg: null };
-    const pctVsAvg = Math.round(((s.current - s.avg) / s.avg) * 100);
-    if (s.current <= s.min && s.max > s.min) return { level: 'lowest', text: m.lowest, pctVsAvg };
-    if (pctVsAvg <= -5) return { level: 'good', text: m.good(Math.abs(pctVsAvg)), pctVsAvg };
-    if (pctVsAvg >= 5) return { level: 'high', text: m.high(pctVsAvg), pctVsAvg };
-    return { level: 'normal', text: m.normal, pctVsAvg };
+    if (!hasEnoughData(s)) return { level: 'new', text: m.new, pctVsTypical: null };
+    const pctVsTypical = Math.round(((s.current - s.median) / s.median) * 100);
+    if (s.current <= s.min && s.max > s.min && pctVsTypical <= -3) return { level: 'lowest', text: m.lowest, pctVsTypical };
+    if (pctVsTypical <= -5) return { level: 'good', text: m.good(Math.abs(pctVsTypical)), pctVsTypical };
+    if (pctVsTypical >= 5) return { level: 'high', text: m.high(pctVsTypical), pctVsTypical };
+    return { level: 'normal', text: m.normal, pctVsTypical };
   }
 
   /**
    * Compare the discount the shop advertises (against MRP) with the real saving
-   * against the price's own history. Flags "inflated" MRP discounts.
+   * against the typical price. Flags "inflated" MRP discounts.
    * @returns {null | {claimedPct, realPct, inflated: boolean, text: string|null}}
    */
   function discountCheck(s, mrp, lang) {
     if (!s || !Number.isFinite(mrp) || mrp <= s.current) return null;
     const claimedPct = Math.round(((mrp - s.current) / mrp) * 100);
     if (!hasEnoughData(s)) return { claimedPct, realPct: null, inflated: false, text: null };
-    const realPct = Math.round(((s.avg - s.current) / s.avg) * 100);
+    const realPct = Math.round(((s.median - s.current) / s.median) * 100);
     const inflated = claimedPct >= 30 && realPct < 5;
     const m = msg(lang);
     let text = null;
     if (inflated) text = realPct <= 0 ? m.inflatedNegative(claimedPct) : m.inflated(claimedPct, realPct);
     return { claimedPct, realPct, inflated, text };
+  }
+
+  function validPoints(history) {
+    return Array.isArray(history) ? history.filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > 0) : [];
+  }
+
+  /**
+   * Time-weighted average of the step-shaped price over [from, to). Only the
+   * part of the window covered by history counts. Returns null when less than
+   * `minDays` of the window is covered.
+   */
+  function windowAvg(history, from, to, minDays = 3) {
+    const h = validPoints(history);
+    let weighted = 0;
+    let covered = 0;
+    for (let i = 0; i < h.length; i++) {
+      const start = Math.max(h[i][0], from);
+      const end = Math.min(i + 1 < h.length ? h[i + 1][0] : to, to);
+      if (end > start) {
+        weighted += h[i][1] * (end - start);
+        covered += end - start;
+      }
+    }
+    return covered >= minDays * DAY ? weighted / covered : null;
+  }
+
+  /**
+   * Detect the "raise the price, then announce a sale" pattern:
+   * the price in the last 3 weeks was pushed at least 10% above its usual
+   * level from the 90 days before, and today's "reduced" price is still not
+   * meaningfully below that usual level.
+   * @returns {null | {baseline, peak, current, text}}
+   */
+  function saleHike(history, now, lang) {
+    const h = validPoints(history);
+    if (h.length < 3) return null;
+    const s = stats(h, now);
+    if (!s || s.spanDays < 14) return null;
+    const recentFrom = now - 21 * DAY;
+    const baseline = windowAvg(h, now - 111 * DAY, recentFrom);
+    if (!baseline) return null;
+
+    let peak = -Infinity;
+    for (let i = 0; i < h.length; i++) {
+      const activeUntil = i + 1 < h.length ? h[i + 1][0] : now;
+      if (activeUntil > recentFrom) peak = Math.max(peak, h[i][1]);
+    }
+    const current = s.current;
+    if (!(peak >= baseline * 1.1) || current >= peak || current < baseline * 0.97) return null;
+    return {
+      baseline: Math.round(baseline),
+      peak,
+      current,
+      text: msg(lang).saleHike(formatINR(Math.round(baseline)), formatINR(peak), formatINR(current)),
+    };
+  }
+
+  /**
+   * Combine community history (one point per day, from the website) with this
+   * browser's own observations: community points older than the first local
+   * point give the long view, local points give the exact recent prices.
+   */
+  function mergeHistory(local, community) {
+    const l = validPoints(local);
+    const c = validPoints(community).sort((a, b) => a[0] - b[0]);
+    if (!c.length) return l;
+    if (!l.length) return c;
+    return c.filter((p) => p[0] < l[0][0]).concat(l);
   }
 
   // -------------------------------------------------------------- alerts ---
@@ -258,6 +351,9 @@
     stats,
     verdict,
     discountCheck,
+    saleHike,
+    mergeHistory,
+    windowAvg,
     evaluateAlert,
     isDealNow,
     chartSvg,

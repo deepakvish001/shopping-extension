@@ -50,6 +50,21 @@ shows an affiliate disclosure whenever the feature is on.
 If you turn affiliate links on, add the disclosure below to the listing
 **before** publishing that version.
 
+## Community price history and the User Data policy
+
+Sending the product pages a user views to a server is handling browsing
+data, so the Chrome Web Store requires a **prominent in-product disclosure
+and the user's affirmative consent** before any of it is sent. The extension:
+
+- sends nothing until the user presses "Haan, chalu karo" / "Yes, turn on"
+  in the panel prompt, which says what is sent (product, price, time), where
+  (the website's host name), and what is not sent (name, account, other
+  browsing);
+- keeps sending only while the setting stays on; turning it off in the
+  panel prompt ("Abhi nahi") or in Options deletes the random client id, the
+  upload queue and the cached history;
+- does nothing at all when `SITE_URL` in `src/shared/config.js` is empty.
+
 ## Listing text (draft)
 
 **Name**: from `_locales/en/messages.json`
@@ -65,10 +80,15 @@ alerts for Amazon.in, Flipkart and Myntra.
 > is not a real saving. Track any product and get a notification when it
 > drops to your target price.
 >
+> It also catches the "raise the price, then call it a sale" trick, and lets
+> you share the price history with friends on WhatsApp or Telegram.
+>
 > Hindi-English (Hinglish) and English.
 >
-> Privacy: your price history and tracked products are stored only in your
-> browser. Nothing is sent to our servers.
+> Privacy: your price history and tracked products are stored in your
+> browser. If you turn on Community price history (it asks first), the
+> product, price and time of products you view are shared anonymously with
+> [website] so everyone gets full price histories. Nothing else is sent.
 >
 > Affiliate disclosure (include only when affiliate links are enabled): When
 > you open a Flipkart or Myntra deal from a price-drop alert or from the deal
@@ -89,10 +109,20 @@ supported Indian shopping sites.
 | `offscreen` | Parse product page HTML in the background to read the price (service workers have no DOM parser). |
 | Host access to `www.amazon.in`, `www.flipkart.com`, `www.myntra.com` | Show the price panel on product pages and fetch tracked product pages to check their price. |
 
+The website API needs no host permission: it answers with CORS headers.
+
 ## Privacy practices form
 
-Answer it from what the code does: the extension reads product page content
-(title, price, image) on the three shop sites and stores it locally; it does
-not transmit any user data. Link the hosted `docs/PRIVACY.md`. If phase 2 adds
-anonymous price sharing, update the form, the privacy policy and the listing
-first.
+Answer it from what the code does:
+- Without community history (or with `SITE_URL` empty): product page content
+  (title, price, image) of the three shop sites is read and stored locally;
+  no user data is transmitted.
+- With community history: the build can transmit, after consent, the
+  address and content (title, price, image) of shop product pages the user
+  views. Declare this under the form's browsing-related categories (web
+  history / website content), state that it is used only to build shared
+  price history, not sold, and not used for anything else, and certify the
+  Limited Use requirements.
+
+Link the hosted privacy policy (the website's `/privacy` page or
+`docs/PRIVACY.md`) and keep it in line with the build you submit.
