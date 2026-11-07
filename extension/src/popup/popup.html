@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tracked products</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1 id="app-name">DaamDekho</h1>
+      <button id="check-now" type="button"></button>
+      <a id="options-link" href="#" role="button" aria-label="Settings" title="Settings">⚙</a>
+    </header>
+    <p id="status" role="status" hidden></p>
+    <main id="list" aria-live="polite"></main>
+    <footer id="footer"></footer>
+    <script src="../shared/stores.js"></script>
+    <script src="../shared/insights.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
