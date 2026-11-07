@@ -447,7 +447,7 @@ test('pasting a link fetches the live price once, then serves it from the databa
 
   const page = await (await get(env, '/p/flipkart/MOBGZ12345')).text();
   assert.match(page, /<span class="price">₹13,999<\/span>/);
-  assert.match(page, /Last check abhi · roz apne aap check hota hai/);
+  assert.match(page, /Last check abhi\. Kharidne se pehle Flipkart par final daam dekh lein\./);
 
   await get(env, `/lookup?u=${encodeURIComponent(FK_URL)}`, { redirect: 'manual' });
   assert.equal(shop.calls.length, 1, 'checked recently, so no second fetch');

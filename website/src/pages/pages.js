@@ -70,7 +70,7 @@ export function homePage(site, { deals, recent, error, q }) {
   <section class="hero">
     <span class="pill"><i></i>Amazon · Flipkart · Myntra</span>
     <h1 class="hero-title"><span>Sale asli hai ya nakli?</span><span class="hl">Daam ki history batayegi</span></h1>
-    <p class="hero-sub">Product ka link paste karo aur purane daam turant dekho.<br>Har product roz check hota hai, <mark>fake sale</mark> pakda jata hai.</p>
+    <p class="hero-sub">Product ka link paste karo, store se abhi ka daam aur purani history turant.<br><mark>Fake sale</mark> aur MRP ka nakli discount pakda jata hai.</p>
     ${lookupForm(q)}
     <p class="hint">App ka share link bhi chalega · bilkul free</p>
     ${error ? html`<p class="notice" role="alert">${error}</p>` : ''}
@@ -79,7 +79,7 @@ export function homePage(site, { deals, recent, error, q }) {
 
   <section class="features" aria-label="Features">
     <article class="feature"><span class="ico">${ICON.chart}</span><h3>Asli price history</h3>
-      <p>Har tracked product roz check hota hai. Sabse kam, sabse zyada aur typical daam ek nazar me.</p></article>
+      <p>Link paste karte hi store se abhi ka daam. Har check aur har user ke daam se history banti hai: sabse kam, sabse zyada, typical.</p></article>
     <article class="feature"><span class="ico">${ICON.shield}</span><h3>Fake sale pakdo</h3>
       <p>Sale se pehle daam badhaya? MRP ka nakli discount? Median wala hisaab sach dikhata hai.</p></article>
     <article class="feature"><span class="ico">${ICON.bell}</span><h3>Daam girne par alert</h3>
@@ -95,7 +95,7 @@ export function homePage(site, { deals, recent, error, q }) {
 
   <h2 id="how">Kaise kaam karta hai</h2>
   <ol class="steps">
-    <li><strong>Link paste karo.</strong> Hum turant store se abhi ka daam laate hain, aur us din se product ko roz check karte hain.</li>
+    <li><strong>Link paste karo.</strong> Hum turant store se abhi ka daam laate hain, aur us din se product ki history banni shuru ho jati hai.</li>
     <li><strong>Sach dekho.</strong> Sabse kam, sabse zyada aur typical daam. MRP wala nakli discount aur "pehle daam badhao, phir sale" wala khel pakda jata hai.</li>
     <li><strong>Sahi waqt par kharido.</strong> Extension me target daam set karo, daam girte hi alert. Dosto ko WhatsApp par share karo.</li>
   </ol>`;
@@ -133,7 +133,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
     <p class="crumbs"><a href="/">Home</a> › ${storeName}</p>
     <section class="panel state">
       <h1>Is product ko abhi track nahi kiya gaya</h1>
-      <p class="lead">${storeName} product <code>${ident.id}</code> ka daam abhi check karte hain. Uske baad hum ise roz check karenge.</p>
+      <p class="lead">${storeName} product <code>${ident.id}</code> ka daam abhi store se check karte hain.</p>
       ${ident.url
         ? html`<div class="cta-row"><a class="btn btn-primary" href="/lookup?u=${encodeURIComponent(ident.url)}" data-loading="Daam la rahe hain…">Abhi daam check karo</a></div>`
         : html`${lookupForm('')}<p class="hint">${storeName} ke product ka poora link paste karo.</p>`}
@@ -148,7 +148,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
     <section class="panel state">
       <h1>${product.title || `${storeName} product ${ident.id}`}</h1>
       <p class="lead">${storeName} ne abhi daam nahi dikhaya${product.last_error ? html` <span class="muted">(${product.last_error})</span>` : ''}.
-      Hum kuch ghante me apne aap dobara check karenge, aur extension users ke dekhte hi bhi daam yahan aa jayega.</p>
+      Kuch ghante baad dobara try karo; extension users ke dekhte hi bhi daam yahan aa jayega.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="/lookup?u=${encodeURIComponent(product.url)}" data-loading="Daam la rahe hain…">Dobara try karo</a>
         <a class="btn" href="${product.url}" rel="nofollow noopener">${storeName} par dekho</a>
@@ -179,7 +179,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
         <span class="price">${fmt(s.current)}</span>
         ${dc ? html`<span class="mrp">${fmt(product.mrp)}</span><span class="off">${dc.claimedPct}% off MRP</span>` : ''}
       </div>
-      <p class="updated">Last check ${checkedAgo(product, now)} · roz apne aap check hota hai. Kharidne se pehle ${storeName} par final daam dekh lein.</p>
+      <p class="updated">Last check ${checkedAgo(product, now)}. Kharidne se pehle ${storeName} par final daam dekh lein.</p>
       <p class="verdict v-${v.level}">${v.text}</p>
       ${warning ? html`<p class="warn">⚠️ ${warning}</p>` : ''}
       <div class="cta-row">
@@ -199,7 +199,7 @@ export function productPage(site, { ident, product, series, now, affiliate }) {
       <div><dt>Sabse kam</dt><dd>${fmt(s.min)}</dd><small>${product.low_day ? formatDay(product.low_day) : ''}</small></div>
       <div><dt>Sabse zyada</dt><dd>${fmt(s.max)}</dd></div>
       <div><dt>Typical (90 din)</dt><dd>${product.typical_price ? fmt(product.typical_price) : fmt(s.median)}</dd></div>
-      <div><dt>Tracking</dt><dd>${product.days} din</dd><small>${product.reporters ? `${product.reporters} users + roz check` : 'roz check'}</small></div>
+      <div><dt>Tracking</dt><dd>${product.days} din</dd><small>${product.reporters ? `${product.reporters} users + server checks` : 'server checks'}</small></div>
     </dl>
   </section>
 
