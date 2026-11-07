@@ -3,7 +3,8 @@
  * HTML fixtures on the real shop URLs (no network needed), then checks the
  * panel, tracking, popup, background re-check, alerts and outbound links.
  * A copy of the extension is pointed at https://site.test, which is served by
- * the real website Worker running in-process on an in-memory database, to
+ * the real website handler running in-process on the Supabase schema in an
+ * in-memory Postgres (PGlite), to
  * check community history end to end (consent, upload, shared history, share).
  *
  * Needs Playwright + Chromium:  npm i -D playwright && npx playwright install chromium
@@ -42,21 +43,22 @@ function extensionCopy() {
   return dir;
 }
 
-/** The real website Worker on an in-memory D1, answering Playwright routes. */
+/** The real website handler on an in-memory Postgres, answering Playwright routes. */
 async function startSite() {
   const { pathToFileURL } = require('url');
   const web = path.resolve(__dirname, '..', '..', 'website');
-  const { default: worker } = await import(pathToFileURL(path.join(web, 'src', 'index.js')).href);
-  const { createD1 } = await import(pathToFileURL(path.join(web, 'test', 'd1-shim.js')).href);
-  const db = await import(pathToFileURL(path.join(web, 'src', 'lib', 'db.js')).href);
-  const env = { DB: createD1(), SITE_NAME: 'DaamDekho', SITE_URL: SITE, CLIENT_SALT: 'e2e' };
+  const { safeHandle } = await import(pathToFileURL(path.join(web, 'src', 'app.js')).href);
+  const { createPgStore } = await import(pathToFileURL(path.join(web, 'test', 'pg-store.js')).href);
+  const pg = await createPgStore();
+  const env = { store: pg.store, SITE_NAME: 'DaamDekho', SITE_URL: SITE, CLIENT_SALT: 'e2e' };
+  const sql = async (text, params = []) => (await pg.db.query(text, params)).rows;
   const handler = async (route) => {
     const req = route.request();
     const method = req.method();
-    const res = await worker.fetch(new Request(req.url(), { method, headers: req.headers(), body: ['GET', 'HEAD'].includes(method) ? undefined : req.postData() }), env);
+    const res = await safeHandle(new Request(req.url(), { method, headers: req.headers(), body: ['GET', 'HEAD'].includes(method) ? undefined : req.postData() }), env);
     await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
   };
-  return { env, handler, refreshAggregates: db.refreshAggregates };
+  return { env, handler, sql };
 }
 
 (async () => {
@@ -219,17 +221,17 @@ async function startSite() {
       const DAY = 864e5;
       const now = Date.now();
       const key = 'amazon:B0TEST1234';
-      await site.env.DB.prepare('INSERT INTO products (key, store, pid, url, title, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .bind(key, 'amazon', 'B0TEST1234', 'https://www.amazon.in/dp/B0TEST1234', 'boAt Rockerz 450', now - 30 * DAY, now)
-        .run();
+      await site.sql('insert into products (key, store, pid, url, title, first_seen, last_seen) values ($1, $2, $3, $4, $5, $6, $7)', [
+        key, 'amazon', 'B0TEST1234', 'https://www.amazon.in/dp/B0TEST1234', 'boAt Rockerz 450', now - 30 * DAY, now,
+      ]);
       for (let d = 30; d >= 1; d--) {
         const t = now - d * DAY;
         const day = new Date(t + 330 * 60e3).toISOString().slice(0, 10);
         for (const c of ['u1', 'u2', 'u3']) {
-          await site.env.DB.prepare('INSERT INTO observations (key, day, client, price, t) VALUES (?, ?, ?, ?, ?)').bind(key, day, c, 1999, t).run();
+          await site.sql('insert into observations (key, day, client, price, t) values ($1, $2, $3, $4, $5)', [key, day, c, 1999, t]);
         }
       }
-      await site.refreshAggregates(site.env.DB, key, now);
+      await site.sql('select refresh_product($1, $2)', [key, now]);
 
       await page.goto(AMAZON_URL);
       const consent = panel.locator('.consent');
@@ -248,11 +250,11 @@ async function startSite() {
       let ours = 0;
       for (let i = 0; i < 40 && !ours; i++) {
         await page.waitForTimeout(500);
-        ours = (await site.env.DB.prepare("SELECT COUNT(*) AS n FROM observations WHERE key = ? AND client NOT IN ('u1','u2','u3')").bind(key).first()).n;
+        ours = (await site.sql("select count(*)::int as n from observations where key = $1 and client not in ('u1','u2','u3')", [key]))[0].n;
       }
       assert.equal(ours, 1, 'one row per user per day');
       assert.deepEqual(await storage('uploadQueue'), [], 'queue drained');
-      assert.equal((await site.env.DB.prepare('SELECT reporters FROM products WHERE key = ?').bind(key).first()).reporters, 4);
+      assert.equal((await site.sql('select reporters from products where key = $1', [key]))[0].reporters, 4);
 
       // Share links point to the website page.
       const wa = await panel.locator('a.chip.wa').getAttribute('href');

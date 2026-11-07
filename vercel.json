@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "",
+  "installCommand": "",
+  "outputDirectory": "website/public",
+  "regions": ["bom1"],
+  "functions": {
+    "api/index.mjs": { "includeFiles": "extension/src/shared/**" }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

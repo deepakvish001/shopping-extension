@@ -8,9 +8,11 @@
     "test": "node --test \"tests/*.test.js\" \"website/test/*.test.js\"",
     "test:e2e": "node tests/e2e/extension.e2e.js",
     "icons": "node scripts/make-icons.js",
-    "pack": "node scripts/pack.js"
+    "pack": "node scripts/pack.js",
+    "dev:website": "node website/scripts/dev.mjs --demo"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
     "linkedom": "^0.18.12"
   }
 }
